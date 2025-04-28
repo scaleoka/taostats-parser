@@ -13,6 +13,11 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
 
+    strategy:
+      matrix:
+        # разбиваем диапазон NetUID на четыре куска
+        chunk: ["1-25", "26-50", "51-75", "76-100"]
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -33,8 +38,9 @@ jobs:
       - name: Write Google creds
         run: echo "${{ secrets.GSPREAD_CREDS_JSON }}" > creds.json
 
-      - name: Run parser
+      - name: Run parser (NetUID ${{ matrix.chunk }})
         env:
           GOOGLE_APPLICATION_CREDENTIALS: creds.json
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-        run: python taostats_autoparser.py
+          NETID_RANGE: ${{ matrix.chunk }}
+        run: python taostats_autoparser.py --range $NETID_RANGE
