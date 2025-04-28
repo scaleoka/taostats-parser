@@ -17,9 +17,13 @@ chromedriver_autoinstaller.install()
 
 def create_driver():
     options = uc.ChromeOptions()
-    options.headless = True
+    # Запуск в headless
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    # Разрешаем любые источники (новый флаг для ChromeDriver v115+)
+    options.add_argument("--remote-allow-origins=*")
     return uc.Chrome(options=options)
 
 def get_total_netids():
