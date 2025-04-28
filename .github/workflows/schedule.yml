@@ -9,13 +9,11 @@ on:
 
 jobs:
   build:
-    # Прервёт job, если она идёт дольше 20 минут
     timeout-minutes: 20
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        # разбиваем диапазон NetUID на четыре куска
         chunk: ["1-25", "26-50", "51-75", "76-100"]
 
     steps:
@@ -43,4 +41,4 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: creds.json
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           NETID_RANGE: ${{ matrix.chunk }}
-        run: python taostats_autoparser.py --range $NETID_RANGE
+        run: python taostats_autoparser.py
