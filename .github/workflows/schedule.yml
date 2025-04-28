@@ -9,10 +9,13 @@ on:
 
 jobs:
   build:
+    # Прервёт job, если она идёт дольше 20 минут
+    timeout-minutes: 20
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
