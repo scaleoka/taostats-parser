@@ -19,22 +19,20 @@ chromedriver_autoinstaller.install()
 
 def create_driver():
     options = uc.ChromeOptions()
-    # Запуск в headless
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
+    # надёжный headless
+    options.add_argument("--headless")
+    options.add_argument("--remote-allow-origins=*")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    # Разрешаем любые источники (новый флаг для ChromeDriver v115+)
-    options.add_argument("--remote-allow-origins=*")
     return uc.Chrome(options=options)
 
 def get_total_netids():
+    # быстрый HTTP-парсинг без Selenium
     resp = requests.get("https://taostats.io/subnets", timeout=10)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
     p = soup.find("p", string=re.compile(r"of\s+\d+\s+entries"))
-    # пример p.text: "Showing 1 to 10 of 97 entries"
-    m = re.search(r"of\s+(\d+)\s+entries", p.text)
+    m = re.search(r"of\s+(\d+)\s+entries", p.text if p else "")
     return int(m.group(1)) if m else 0
 
 def wait_if_captcha_present(driver, timeout=5):
@@ -70,16 +68,17 @@ def extract_price_parts_by_label(driver, label_text):
         )
         texts = [p.text for p in parent.find_elements(By.TAG_NAME, 'p') if p.text.strip()]
         full = " ".join(texts)
-        match = re.search(r"(\d+\.\d+|\d+)(?:\s*\d+)?", full)
-        return match.group(0).replace(" ", "") if match else None
+        match = re.search(r"(\d+\.\d+|\d+)", full)
+        return match.group(0) if match else None
     except Exception:
         return None
 
 def parse_main_page(driver, netid):
-    url = f"https://taostats.io/subnets/{netid}/metagraph?order=type%3Aasc"
-    driver.get(url)
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//p[text()='Price']")))
-    data = {
+    driver.get(f"https://taostats.io/subnets/{netid}/metagraph?order=type%3Aasc")
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.XPATH, "//p[text()='Price']"))
+    )
+    return {
         'netuid': safe_find_text(driver, By.CSS_SELECTOR, "div.flex.flex-row.items-center.gap-1 p.font-fira"),
         'name': safe_find_text(driver, By.CSS_SELECTOR, "p.font-bold"),
         'reg_date': safe_find_text(driver, By.XPATH, "//p[text()='Reg:']/following-sibling::p"),
@@ -90,12 +89,12 @@ def parse_main_page(driver, netid):
         'discord': driver.find_element(By.CSS_SELECTOR, "a[href*='discord.com']").get_attribute('href') if driver.find_elements(By.CSS_SELECTOR, "a[href*='discord.com']") else None,
         'key': safe_find_text(driver, By.CSS_SELECTOR, "span.flex-shrink-0.truncate")
     }
-    return data
 
 def parse_table_stats(driver, netid, order, icon_css, col_index):
-    url = f"https://taostats.io/subnets/{netid}/metagraph?order={order}&limit=100"
-    driver.get(url)
-    WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.ID, 'taostats-table')))
+    driver.get(f"https://taostats.io/subnets/{netid}/metagraph?order={order}&limit=100")
+    WebDriverWait(driver, 30).until(
+        EC.presence_of_element_located((By.ID, 'taostats-table'))
+    )
     table = driver.find_element(By.ID, 'taostats-table')
     vals = []
     for row in table.find_elements(By.TAG_NAME, 'tr'):
@@ -127,7 +126,6 @@ def process_single_netid(nid):
         driver.quit()
 
 def save_to_gsheet(df: pd.DataFrame):
-    # считываем переменные
     spreadsheet_id = os.environ['SPREADSHEET_ID']
     creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', 'creds.json')
     scopes = ['https://www.googleapis.com/auth/spreadsheets']
@@ -141,18 +139,28 @@ def save_to_gsheet(df: pd.DataFrame):
         ws = sh.add_worksheet('taostats', rows="1000", cols="20")
     data = [df.columns.tolist()] + df.values.tolist()
     ws.update(data)
-    print("✅ Данные записаны в Google Sheets")
+    print("✅ Данные записаны")
 
 def main():
-    total = get_total_netids()
-    print(f"Найдено подсетей: {total}")
-    netids = [str(i) for i in range(1, total+1)]
+    # определяем диапазон NetUID
+    rng = os.environ.get("NETID_RANGE")
+    if rng:
+        start, end = map(int, rng.split('-'))
+        netids = [str(i) for i in range(start, end+1)]
+    else:
+        total = get_total_netids()
+        print(f"Найдено подсетей: {total}")
+        netids = [str(i) for i in range(1, total+1)]
+
+    # собираем данные
     all_data = []
     for nid in netids:
         try:
             all_data.append(process_single_netid(nid))
         except Exception as e:
             print(f"[X] Ошибка {nid}: {e}")
+
+    # сохраняем
     if all_data:
         df = pd.DataFrame(all_data)
         save_to_gsheet(df)
