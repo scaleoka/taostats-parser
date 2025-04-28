@@ -1,0 +1,6 @@
+undetected-chromedriver
+selenium
+pandas
+gspread
+oauth2client
+chromedriver-autoinstaller
