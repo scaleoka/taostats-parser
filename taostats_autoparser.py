@@ -3,6 +3,8 @@ import re
 import time
 import pandas as pd
 import undetected_chromedriver as uc
+import requests
+from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -27,21 +29,12 @@ def create_driver():
     return uc.Chrome(options=options)
 
 def get_total_netids():
-    driver = create_driver()
-    driver.get("https://taostats.io/subnets")
-    # небольшой pause, чтобы страница начала рендериться
-    time.sleep(2)
-    # ждём до 30 секунд появления нужного <p>
-    p = WebDriverWait(driver, 30).until(
-        EC.presence_of_element_located(
-            (By.XPATH, "//p[contains(., 'Showing') and contains(., 'entries')]")
-        )
-    )
-    text = p.text  # пример: "Showing 1 to 10 of 97 entries"
-    driver.quit()
-    # вычленяем число между 'of' и 'entries'
-    import re
-    m = re.search(r"of\s+(\d+)\s+entries", text)
+    resp = requests.get("https://taostats.io/subnets", timeout=10)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    p = soup.find("p", string=re.compile(r"of\s+\d+\s+entries"))
+    # пример p.text: "Showing 1 to 10 of 97 entries"
+    m = re.search(r"of\s+(\d+)\s+entries", p.text)
     return int(m.group(1)) if m else 0
 
 def wait_if_captcha_present(driver, timeout=5):
