@@ -1,8 +1,11 @@
 name: Daily TAO Parser
 
 on:
+  # запуск по расписанию
   schedule:
-    - cron: '0 0 * * *'  # каждый день в 00:00 UTC
+    - cron: '0 0 * * *'
+  # ручной запуск из интерфейса
+  workflow_dispatch:
 
 jobs:
   build:
