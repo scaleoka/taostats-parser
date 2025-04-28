@@ -1,19 +1,21 @@
 name: Daily TAO Parser
 
 on:
-  # запуск по расписанию
+  # запуск по расписанию в 00:00 UTC
   schedule:
     - cron: '0 0 * * *'
-  # ручной запуск из интерфейса
+  # ручной запуск
   workflow_dispatch:
 
 jobs:
   build:
+    # если job идёт дольше 20 минут, Actions её сам прервет
     timeout-minutes: 20
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
+        # разбиваем диапазон NetUID на четыре части
         chunk: ["1-25", "26-50", "51-75", "76-100"]
 
     steps:
@@ -31,7 +33,9 @@ jobs:
           sudo apt-get install -y chromium-driver
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt bs4
+          pip freeze
 
       - name: Write Google creds
         run: echo "${{ secrets.GSPREAD_CREDS_JSON }}" > creds.json
