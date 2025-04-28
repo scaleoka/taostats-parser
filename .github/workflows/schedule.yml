@@ -1,0 +1,34 @@
+name: Daily TAO Parser
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # каждый день в 00:00 UTC
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install ChromeDriver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-driver
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write Google creds
+        run: echo "${{ secrets.GSPREAD_CREDS_JSON }}" > creds.json
+
+      - name: Run parser
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: creds.json
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: python taostats_autoparser.py
