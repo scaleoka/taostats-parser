@@ -38,7 +38,8 @@ jobs:
           pip freeze
 
       - name: Write Google creds
-        run: echo "${{ secrets.GSPREAD_CREDS_JSON }}" > creds.json
+        run: |
+          printf '%s\n' "${{ secrets.GSPREAD_CREDS_JSON }}" > creds.json
 
       - name: Run parser (NetUID ${{ matrix.chunk }})
         env:
