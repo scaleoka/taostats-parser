@@ -4,3 +4,5 @@ pandas
 gspread
 oauth2client
 chromedriver-autoinstaller
+requests
+beautifulsoup4
