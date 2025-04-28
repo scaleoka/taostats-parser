@@ -29,12 +29,18 @@ def create_driver():
 def get_total_netids():
     driver = create_driver()
     driver.get("https://taostats.io/subnets")
-    # ждём появления текста "of N entries"
-    p = WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.XPATH, "//p[contains(text(),'entries')]"))
+    # небольшой pause, чтобы страница начала рендериться
+    time.sleep(2)
+    # ждём до 30 секунд появления нужного <p>
+    p = WebDriverWait(driver, 30).until(
+        EC.presence_of_element_located(
+            (By.XPATH, "//p[contains(., 'Showing') and contains(., 'entries')]")
+        )
     )
-    text = p.text  # e.g. "Showing 1 to 10 of 97 entries"
+    text = p.text  # пример: "Showing 1 to 10 of 97 entries"
     driver.quit()
+    # вычленяем число между 'of' и 'entries'
+    import re
     m = re.search(r"of\s+(\d+)\s+entries", text)
     return int(m.group(1)) if m else 0
 
