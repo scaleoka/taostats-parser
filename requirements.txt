@@ -6,3 +6,4 @@ oauth2client
 chromedriver-autoinstaller
 requests
 beautifulsoup4
+bs4
