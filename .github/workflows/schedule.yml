@@ -1,38 +1,36 @@
-name: Daily TAO Parser
+name: TAOStats Parser CI
 
 on:
-  # запуск по расписанию в 00:00 UTC
-  schedule:
-    - cron: '0 0 * * *'
-  # ручной запуск
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
-  build:
-    # если job идёт дольше 20 минут, Actions её сам прервет
-    timeout-minutes: 20
+  parser:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v2
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v2
         with:
-          python-version: '3.10'
+          python-version: '3.x'
 
-      - name: Install Python dependencies
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Debug: show repo layout
+        run: ls -R .
+
+      - name: Find and run TAOStats parser
         run: |
-          pip install -r requirements.txt
-          pip freeze
-
-      - name: Write Google creds
-        run: |
-          printf '%s\n' "${{ secrets.GSPREAD_CREDS_JSON }}" > creds.json
-
-      - name: Run HTTP-based parser
-        env:
-          GOOGLE_APPLICATION_CREDENTIALS: creds.json
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-        run: python taostats_http_parser.py
+          # Автоматический поиск скрипта
+          SCRIPT_PATH=$(find . -type f -name 'taostats_http_parser.py')
+          if [ -z "$SCRIPT_PATH" ]; then
+            echo "Error: taostats_http_parser.py not found"
+            exit 1
+          fi
+          echo "Found parser at $SCRIPT_PATH"
+          python "$SCRIPT_PATH"
