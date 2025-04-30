@@ -16,6 +16,8 @@ def get_env_var(name):
 
 # Load environment variables
 TAO_API_KEY = get_env_var("TAO_API_KEY")
+# Allow overriding API base URL; default to production API
+TAO_API_BASE_URL = os.environ.get("TAO_API_BASE_URL", "https://api.taostats.io/v1")
 creds_json_str = get_env_var("GSPREAD_CREDS_JSON")
 creds_json = json.loads(creds_json_str)
 SPREADSHEET_ID = get_env_var("SPREADSHEET_ID")
@@ -28,34 +30,27 @@ scope = [
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
 gc = gspread.authorize(credentials)
 
-# Define API endpoints
-API_URL = "https://api.taostats.io/v1/subnets"
-FALLBACK_URL = "https://taostats.io/data.json"
+# Define headers and endpoint
 headers = {
     "Accept": "application/json",
     "Authorization": TAO_API_KEY
 }
+endpoint_url = f"{TAO_API_BASE_URL}/subnets"
 
 # Fetch subnets data
 try:
-    resp = requests.get(API_URL, headers=headers, timeout=15)
+    resp = requests.get(endpoint_url, headers=headers, timeout=15)
     resp.raise_for_status()
     subnets = resp.json()
 except requests.HTTPError as e:
     status = getattr(resp, 'status_code', None)
+    logging.error("Error fetching subnets from %s: %s", endpoint_url, e)
     if status == 404:
-        logging.warning("Endpoint %s returned 404, falling back to %s", API_URL, FALLBACK_URL)
-        try:
-            resp2 = requests.get(FALLBACK_URL, timeout=15)
-            resp2.raise_for_status()
-            data = resp2.json()
-            subnets = data.get("subnets", [])
-        except Exception as e2:
-            logging.error("Error fetching fallback data: %s", e2)
-            sys.exit(1)
-    else:
-        logging.error("Error fetching subnets from %s: %s", API_URL, e)
-        sys.exit(1)
+        logging.error(
+            "Received 404 Not Found. Check your TAO_API_BASE_URL (currently '%s') and TAO_API_KEY.",
+            TAO_API_BASE_URL
+        )
+    sys.exit(1)
 except Exception as e:
     logging.error("Unexpected error: %s", e)
     sys.exit(1)
