@@ -6,6 +6,7 @@ import requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+
 def get_env_var(name):
     val = os.environ.get(name)
     if not val:
@@ -13,14 +14,10 @@ def get_env_var(name):
         sys.exit(1)
     return val
 
-# Load Taostats API key
+# Load environment variables
 TAO_API_KEY = get_env_var("TAO_API_KEY")
-
-# Load Google Sheets credentials JSON from environment
 creds_json_str = get_env_var("GSPREAD_CREDS_JSON")
 creds_json = json.loads(creds_json_str)
-
-# Spreadsheet ID
 SPREADSHEET_ID = get_env_var("SPREADSHEET_ID")
 
 # Configure gspread client
@@ -31,22 +28,39 @@ scope = [
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
 gc = gspread.authorize(credentials)
 
-# Fetch subnets from Taostats
+# Define API endpoints
 API_URL = "https://api.taostats.io/v1/subnets"
+FALLBACK_URL = "https://taostats.io/data.json"
 headers = {
     "Accept": "application/json",
     "Authorization": TAO_API_KEY
 }
 
+# Fetch subnets data
 try:
     resp = requests.get(API_URL, headers=headers, timeout=15)
     resp.raise_for_status()
     subnets = resp.json()
+except requests.HTTPError as e:
+    status = getattr(resp, 'status_code', None)
+    if status == 404:
+        logging.warning("Endpoint %s returned 404, falling back to %s", API_URL, FALLBACK_URL)
+        try:
+            resp2 = requests.get(FALLBACK_URL, timeout=15)
+            resp2.raise_for_status()
+            data = resp2.json()
+            subnets = data.get("subnets", [])
+        except Exception as e2:
+            logging.error("Error fetching fallback data: %s", e2)
+            sys.exit(1)
+    else:
+        logging.error("Error fetching subnets from %s: %s", API_URL, e)
+        sys.exit(1)
 except Exception as e:
-    logging.error(f"Error fetching subnets: {e}")
+    logging.error("Unexpected error: %s", e)
     sys.exit(1)
 
-# Prepare rows for sheet: header + data
+# Prepare rows for Google Sheets
 fields = ["netuid", "name", "price", "emission", "reg_cost", "github", "discord", "key"]
 rows = [fields]
 for sb in subnets:
@@ -61,12 +75,10 @@ for sb in subnets:
         sb.get("key", "")
     ])
 
-# Open the Google Sheet and clear existing sheet
-sh = gc.open_by_key(SPREADSHEET_ID)
+# Write to Google Sheet
+sh = gspread.authorize(credentials).open_by_key(SPREADSHEET_ID)
 sheet = sh.sheet1
 sheet.clear()
-
-# Write all rows at once
 sheet.update('A1', rows)
 
 print(f"Successfully wrote {len(rows)-1} subnets to spreadsheet {SPREADSHEET_ID}")
