@@ -20,11 +20,13 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
+          pip install bittensor
           pip install -r requirements.txt
           pip install playwright
 
       - name: Install Playwright browsers
-        run: playwright install chromium
+        run: |
+          npx playwright install chromium
 
       - name: Run TAOStats Parser
         env:
