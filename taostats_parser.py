@@ -16,7 +16,7 @@ def get_env_var(name):
 
 # Load environment variables
 TAO_API_KEY = get_env_var("TAO_API_KEY")
-# Allow overriding API base URL; default to production API
+# Optional base URL override
 TAO_API_BASE_URL = os.environ.get("TAO_API_BASE_URL", "https://api.taostats.io/v1")
 creds_json_str = get_env_var("GSPREAD_CREDS_JSON")
 creds_json = json.loads(creds_json_str)
@@ -30,10 +30,10 @@ scope = [
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
 gc = gspread.authorize(credentials)
 
-# Define headers and endpoint
+# Prepare headers (use Bearer token)
 headers = {
     "Accept": "application/json",
-    "Authorization": TAO_API_KEY
+    "Authorization": f"Bearer {TAO_API_KEY}"
 }
 endpoint_url = f"{TAO_API_BASE_URL}/subnets"
 
@@ -45,11 +45,10 @@ try:
 except requests.HTTPError as e:
     status = getattr(resp, 'status_code', None)
     logging.error("Error fetching subnets from %s: %s", endpoint_url, e)
-    if status == 404:
-        logging.error(
-            "Received 404 Not Found. Check your TAO_API_BASE_URL (currently '%s') and TAO_API_KEY.",
-            TAO_API_BASE_URL
-        )
+    if status == 401:
+        logging.error("Unauthorized. Check if TAO_API_KEY is valid and format is Bearer <token>.")
+    elif status == 404:
+        logging.error("Not Found. Check TAO_API_BASE_URL (currently '%s').", TAO_API_BASE_URL)
     sys.exit(1)
 except Exception as e:
     logging.error("Unexpected error: %s", e)
