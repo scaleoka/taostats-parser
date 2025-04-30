@@ -2,8 +2,7 @@ name: TAOStats Parser CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -19,19 +18,17 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install playwright
+
+      - name: Install Playwright browsers
+        run: playwright install chromium
 
       - name: Run TAOStats Parser
         env:
-          TAO_API_KEY:       ${{ secrets.TAO_API_KEY }}
+          TAO_API_KEY:        ${{ secrets.TAO_API_KEY }}
           GSPREAD_CREDS_JSON: ${{ secrets.GSPREAD_CREDS_JSON }}
-          SPREADSHEET_ID:    ${{ secrets.SPREADSHEET_ID }}
-        run: |
-          # Ищем файл taostats_parser.py в репо
-          SCRIPT_PATH=$(find . -maxdepth 2 -type f -name 'taostats_parser.py' | head -n1)
-          if [ -z "$SCRIPT_PATH" ]; then
-            echo "Error: taostats_parser.py not found"
-            exit 1
-          fi
-          echo "Found parser at $SCRIPT_PATH"
-          python "$SCRIPT_PATH"
+          SPREADSHEET_ID:     ${{ secrets.SPREADSHEET_ID }}
+        run: python taostats_parser.py
