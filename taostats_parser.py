@@ -3,12 +3,10 @@ import os
 import sys
 import json
 import logging
-
-import bittensor
+import requests
 from playwright.sync_api import sync_playwright
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-
 
 def get_env_var(name):
     val = os.environ.get(name)
@@ -18,59 +16,35 @@ def get_env_var(name):
     return val
 
 
-def fetch_onchain_data():
+def fetch_api_json():
     """
-    Fetches on-chain subnet data via Bittensor SDK.
-    Returns a dict keyed by netuid with fields: name, price, emission, reg_cost.
-    """
-    subtensor = bittensor.subtensor(network="mainnet")
-    metas = subtensor.get_all_subnets_info()
-    onchain = {}
-    for di in metas:
-        onchain[di.netuid] = {
-            "name": di.name or f"SN{di.netuid}",
-            "price": di.price,
-            "emission": di.emission,
-            "reg_cost": di.burn_cost
-        }
-    return onchain
-
-
-def fetch_offchain_data():
-    """
-    Scrapes off-chain metadata (github, discord, key) from taostats.io via Playwright.
-    Returns a dict keyed by netuid.
+    Launches a headless browser to intercept the first JSON XHR containing 'subnets' in its URL.
+    Returns the parsed JSON data (a list of subnets).
     """
     url = "https://taostats.io/subnets"
-    offchain = {}
+    api_data = None
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch()
         page = browser.new_page()
-        page.goto(url, timeout=60000)
-        page.wait_for_selector("table tbody tr", timeout=60000)
-        for row in page.query_selector_all("table tbody tr"):
-            cols = row.query_selector_all("td")
+        def handle_response(response):
+            nonlocal api_data
             try:
-                netuid = int(cols[0].inner_text())
+                if "subnets" in response.url and response.request.resource_type == "xhr" and \
+                   response.headers.get("content-type", "").startswith("application/json"):
+                    api_data = response.json()
             except Exception:
-                continue
-            # GitHub link
-            gh_a = cols[5].query_selector("a")
-            github = gh_a.get_attribute("href") if gh_a else ""
-            # Discord link
-            dc_a = cols[6].query_selector("a")
-            discord = dc_a.get_attribute("href") if dc_a else ""
-            # Key
-            key = cols[7].inner_text().strip()
-            offchain[netuid] = {"github": github, "discord": discord, "key": key}
+                pass
+        page.on("response", handle_response)
+        page.goto(url, timeout=60000)
+        page.wait_for_timeout(5000)
         browser.close()
-    return offchain
+    if not api_data:
+        logging.error("Failed to detect JSON API endpoint on %s", url)
+        sys.exit(1)
+    return api_data
 
 
 def write_to_sheet(rows):
-    """
-    Writes the provided rows to Google Sheets using credentials from env.
-    """
     creds_json_str = get_env_var("GSPREAD_CREDS_JSON")
     creds = json.loads(creds_json_str)
     SPREADSHEET_ID = get_env_var("SPREADSHEET_ID")
@@ -88,24 +62,22 @@ def write_to_sheet(rows):
 
 
 def main():
-    onchain = fetch_onchain_data()
-    offchain = fetch_offchain_data()
-    # Combine rows
-    rows = [["netuid","name","price","emission","reg_cost","github","discord","key"]]
-    for netuid, data in onchain.items():
-        md = offchain.get(netuid, {})
+    data = fetch_api_json()
+    # Expecting a list of objects with desired keys
+    header = ["netuid","name","price","emission","reg_cost","github","discord","key"]
+    rows = [header]
+    for sb in data:
         rows.append([
-            netuid,
-            data.get("name", ""),
-            data.get("price", ""),
-            data.get("emission", ""),
-            data.get("reg_cost", ""),
-            md.get("github", ""),
-            md.get("discord", ""),
-            md.get("key", "")
+            sb.get("netuid", ""),
+            sb.get("name", ""),
+            sb.get("price", ""),
+            sb.get("emission", ""),
+            sb.get("reg_cost", ""),
+            sb.get("github", ""),
+            sb.get("discord", ""),
+            sb.get("key", "")
         ])
     write_to_sheet(rows)
-
 
 if __name__ == "__main__":
     main()
