@@ -1,8 +1,11 @@
+#!/usr/bin/env python3
 import os
 import sys
 import json
 import logging
-import requests
+
+import bittensor
+from playwright.sync_api import sync_playwright
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -14,65 +17,95 @@ def get_env_var(name):
         sys.exit(1)
     return val
 
-# Load environment variables
-TAO_API_KEY = get_env_var("TAO_API_KEY")
-# Optional base URL override
-TAO_API_BASE_URL = os.environ.get("TAO_API_BASE_URL", "https://api.taostats.io/v1")
-creds_json_str = get_env_var("GSPREAD_CREDS_JSON")
-creds_json = json.loads(creds_json_str)
-SPREADSHEET_ID = get_env_var("SPREADSHEET_ID")
 
-# Configure gspread client
-scope = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
-credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
-gc = gspread.authorize(credentials)
+def fetch_onchain_data():
+    """
+    Fetches on-chain subnet data via Bittensor SDK.
+    Returns a dict keyed by netuid with fields: name, price, emission, reg_cost.
+    """
+    subtensor = bittensor.subtensor(network="mainnet")
+    metas = subtensor.get_all_subnets_info()
+    onchain = {}
+    for di in metas:
+        onchain[di.netuid] = {
+            "name": di.name or f"SN{di.netuid}",
+            "price": di.price,
+            "emission": di.emission,
+            "reg_cost": di.burn_cost
+        }
+    return onchain
 
-# Prepare headers (use Bearer token)
-headers = {
-    "Accept": "application/json",
-    "Authorization": f"Bearer {TAO_API_KEY}"
-}
-endpoint_url = f"{TAO_API_BASE_URL}/subnets"
 
-# Fetch subnets data
-try:
-    resp = requests.get(endpoint_url, headers=headers, timeout=15)
-    resp.raise_for_status()
-    subnets = resp.json()
-except requests.HTTPError as e:
-    status = getattr(resp, 'status_code', None)
-    logging.error("Error fetching subnets from %s: %s", endpoint_url, e)
-    if status == 401:
-        logging.error("Unauthorized. Check if TAO_API_KEY is valid and format is Bearer <token>.")
-    elif status == 404:
-        logging.error("Not Found. Check TAO_API_BASE_URL (currently '%s').", TAO_API_BASE_URL)
-    sys.exit(1)
-except Exception as e:
-    logging.error("Unexpected error: %s", e)
-    sys.exit(1)
+def fetch_offchain_data():
+    """
+    Scrapes off-chain metadata (github, discord, key) from taostats.io via Playwright.
+    Returns a dict keyed by netuid.
+    """
+    url = "https://taostats.io/subnets"
+    offchain = {}
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(url, timeout=60000)
+        page.wait_for_selector("table tbody tr", timeout=60000)
+        for row in page.query_selector_all("table tbody tr"):
+            cols = row.query_selector_all("td")
+            try:
+                netuid = int(cols[0].inner_text())
+            except Exception:
+                continue
+            # GitHub link
+            gh_a = cols[5].query_selector("a")
+            github = gh_a.get_attribute("href") if gh_a else ""
+            # Discord link
+            dc_a = cols[6].query_selector("a")
+            discord = dc_a.get_attribute("href") if dc_a else ""
+            # Key
+            key = cols[7].inner_text().strip()
+            offchain[netuid] = {"github": github, "discord": discord, "key": key}
+        browser.close()
+    return offchain
 
-# Prepare rows for Google Sheets
-fields = ["netuid", "name", "price", "emission", "reg_cost", "github", "discord", "key"]
-rows = [fields]
-for sb in subnets:
-    rows.append([
-        sb.get("netuid", ""),
-        sb.get("name", ""),
-        sb.get("price", ""),
-        sb.get("emission", ""),
-        sb.get("reg_cost", ""),
-        sb.get("github", ""),
-        sb.get("discord", ""),
-        sb.get("key", "")
-    ])
 
-# Write to Google Sheet
-sh = gspread.authorize(credentials).open_by_key(SPREADSHEET_ID)
-sheet = sh.sheet1
-sheet.clear()
-sheet.update('A1', rows)
+def write_to_sheet(rows):
+    """
+    Writes the provided rows to Google Sheets using credentials from env.
+    """
+    creds_json_str = get_env_var("GSPREAD_CREDS_JSON")
+    creds = json.loads(creds_json_str)
+    SPREADSHEET_ID = get_env_var("SPREADSHEET_ID")
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
+    gc = gspread.authorize(credentials)
+    sh = gc.open_by_key(SPREADSHEET_ID)
+    sheet = sh.sheet1
+    sheet.clear()
+    sheet.update('A1', rows)
+    print(f"Successfully wrote {len(rows)-1} subnets to spreadsheet {SPREADSHEET_ID}")
 
-print(f"Successfully wrote {len(rows)-1} subnets to spreadsheet {SPREADSHEET_ID}")
+
+def main():
+    onchain = fetch_onchain_data()
+    offchain = fetch_offchain_data()
+    # Combine rows
+    rows = [["netuid","name","price","emission","reg_cost","github","discord","key"]]
+    for netuid, data in onchain.items():
+        md = offchain.get(netuid, {})
+        rows.append([
+            netuid,
+            data.get("name", ""),
+            data.get("price", ""),
+            data.get("emission", ""),
+            data.get("reg_cost", ""),
+            md.get("github", ""),
+            md.get("discord", ""),
+            md.get("key", "")
+        ])
+    write_to_sheet(rows)
+
+
+if __name__ == "__main__":
+    main()
