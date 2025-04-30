@@ -20,17 +20,15 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install bittensor
-          pip install -r requirements.txt
-          pip install playwright
+          pip install requests gspread oauth2client playwright
 
       - name: Install Playwright browsers
-        run: |
-          npx playwright install chromium
+        run: npx playwright install chromium
 
       - name: Run TAOStats Parser
         env:
-          TAO_API_KEY:        ${{ secrets.TAO_API_KEY }}
+          GSPREADS_CREDS:  ${{ secrets.GSPREAD_CREDS_JSON }}
+          GSPREAD_CSVID:   ${{ secrets.SPREADSHEET_ID }}
           GSPREAD_CREDS_JSON: ${{ secrets.GSPREAD_CREDS_JSON }}
-          SPREADSHEET_ID:     ${{ secrets.SPREADSHEET_ID }}
+          SPREADSHEET_ID:  ${{ secrets.SPREADSHEET_ID }}
         run: python taostats_parser.py
