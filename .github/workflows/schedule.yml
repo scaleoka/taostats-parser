@@ -22,9 +22,16 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run TAOStats Parser
-        # Передаём секреты скрипту через окружение
         env:
           TAO_API_KEY:       ${{ secrets.TAO_API_KEY }}
           GSPREAD_CREDS_JSON: ${{ secrets.GSPREAD_CREDS_JSON }}
           SPREADSHEET_ID:    ${{ secrets.SPREADSHEET_ID }}
-        run: python taostats_parser.py
+        run: |
+          # Ищем файл taostats_parser.py в репо
+          SCRIPT_PATH=$(find . -maxdepth 2 -type f -name 'taostats_parser.py' | head -n1)
+          if [ -z "$SCRIPT_PATH" ]; then
+            echo "Error: taostats_parser.py not found"
+            exit 1
+          fi
+          echo "Found parser at $SCRIPT_PATH"
+          python "$SCRIPT_PATH"
