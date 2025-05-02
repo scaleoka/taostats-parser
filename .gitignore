@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+btcli_env/
+.env/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# VS Code
+.vscode/
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# CSV, output
+*.csv
+output/
