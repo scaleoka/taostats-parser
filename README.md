@@ -1,10 +1,11 @@
-# Bittensor CLI Wrapper for Windows
+# TAOstats Parser
 
-Установка и запуск btcli через Python 3.10 виртуальное окружение.
+Скрипт для получения информации о подсетях Bittensor через `btcli`.
 
-## Быстрый старт
+## 🚀 Быстрый старт
 
-1. Установи [Python 3.10](https://www.python.org/downloads/release/python-3100/)
-2. Запусти:
-setup.bat
-3. После запуска скрипт `fetch_subnets.py` выведет список подсетей
+1. Установи Python 3.10: https://www.python.org/downloads/release/python-3100/
+2. Клонируй проект:
+   ```bash
+   git clone https://github.com/scaleoka/taostats-parser.git
+   cd taostats-parser
