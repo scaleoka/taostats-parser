@@ -1,5 +1,3 @@
-```python
-#!/usr/bin/env python3
 import os
 import time
 import datetime
@@ -17,7 +15,6 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 def get_sheets_service():
-    # Создаём credentials из JSON строки
     info = json.loads(SERVICE_ACCOUNT_JSON)
     creds = service_account.Credentials.from_service_account_info(
         info, scopes=SCOPES
