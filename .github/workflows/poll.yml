@@ -1,10 +1,9 @@
 name: Poll Taostats Parser
 
 on:
-  # Позволяет запускать руками из Actions → Run workflow
   workflow_dispatch:
-  # И/или по расписанию, например, каждый час
   schedule:
+    # Запускать раз в час по крону
     - cron: '0 * * * *'
 
 jobs:
@@ -24,6 +23,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Install Chromium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser
 
       - name: Run taostats parser
         run: python src/main.py
