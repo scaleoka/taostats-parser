@@ -3,11 +3,11 @@ import json
 import re
 import csv
 import time
+import shutil
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-from pathlib import Path
 
 URL = "https://taostats.io/subnets"
 
@@ -24,13 +24,13 @@ def fetch_html(url: str) -> str:
 
 def extract_next_data(html: str) -> dict:
     """
-    Ищет встроенный JSON Next.js в <script> и возвращает его.
+    Пытается найти Next.js JSON в HTML.
     """
-    # Попытка по id __NEXT_DATA__
+    # Поиск по id
     m = re.search(r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
     if m:
         return json.loads(m.group(1))
-    # Альтернативный поиск любых блоков с JSON
+    # Альтернатива: любые блоки с JSON
     for raw in re.findall(r'<script[^>]*>(\{.*?\})</script>', html, re.S):
         try:
             data = json.loads(raw)
@@ -43,18 +43,26 @@ def extract_next_data(html: str) -> dict:
 
 def fetch_data_selenium(url: str) -> dict:
     """
-    Запускает headless Chrome и возвращает window.__NEXT_DATA__.
-    Требует selenium и webdriver-manager.
+    Запускает headless Chrome/Chromium через Selenium и возвращает window.__NEXT_DATA__.
     """
     options = Options()
-    options.add_argument("--headless=new")
+    # Делаем режим без GUI
+    options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    # Указываем путь к бинарнику Chrome/Chromium
+    chrome_bin = (shutil.which("google-chrome-stable") or
+                  shutil.which("google-chrome") or
+                  shutil.which("chromium-browser") or
+                  shutil.which("chromium"))
+    if chrome_bin:
+        options.binary_location = chrome_bin
+    # Устанавливаем драйвер
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
     try:
         driver.get(url)
-        time.sleep(5)  # ждём, пока JS отработает
+        time.sleep(10)  # ждём загрузки JS
         data = driver.execute_script("return window.__NEXT_DATA__ || null")
         if data and isinstance(data, dict):
             return data
@@ -65,7 +73,7 @@ def fetch_data_selenium(url: str) -> dict:
 
 def parse_subnets(data: dict) -> list:
     """
-    Извлекает список подсетей из Next.js JSON.
+    Извлекает список подсетей из структуры Next.js JSON.
     """
     return (
         data
@@ -77,7 +85,7 @@ def parse_subnets(data: dict) -> list:
 
 def transform_subnet(s: dict) -> dict:
     """
-    Преобразует объект подсети к нужному набору полей.
+    Преобразует объект подсети к словарю с нужными полями.
     """
     links = s.get("links", {}) or {}
     return {
