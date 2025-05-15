@@ -1,16 +1,16 @@
 name: Poll Taostats Parser
 
 on:
+  # Позволяет запускать руками из Actions → Run workflow
   workflow_dispatch:
+  # И/или по расписанию, например, каждый час
+  schedule:
+    - cron: '0 * * * *'
 
 jobs:
   poll:
     runs-on: ubuntu-latest
-    env:
-      WS_URL: ${{ secrets.WS_URL }}
-      POLL_INTERVAL: ${{ secrets.POLL_INTERVAL }}
-      SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -25,5 +25,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run taostats poller
-        run: python src/main.py
+      - name: Run taostats parser
+        # если main.py лежит в корне
+        run: python main.py
+        # Если вы всё-таки держите его в src/, то так:
+        # run: python src/main.py
