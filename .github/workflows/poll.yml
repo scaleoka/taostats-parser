@@ -26,7 +26,4 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run taostats parser
-        # если main.py лежит в корне
-        run: python main.py
-        # Если вы всё-таки держите его в src/, то так:
-        # run: python src/main.py
+        run: python src/main.py
