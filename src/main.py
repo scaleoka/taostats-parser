@@ -16,22 +16,34 @@ def fetch_html(url: str) -> str:
 
 def extract_next_data(html: str) -> dict:
     """
-    Извлекает и возвращает JSON-объект из <script id="__NEXT_DATA__">…</script>.
+    Пытается найти и распарсить JSON-объект из любого <script>...</script>,
+    содержащего валидный JSON с ключами props → pageProps.
+    Если не находит, сохраняет HTML для отладки и выбрасывает ошибку.
     """
-    pattern = r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>'
-    m = re.search(pattern, html, re.S)
-    if not m:
-        # пробуем альтернативный вариант
-        pattern2 = r'window\.__NEXT_DATA__\s*=\s*({.*?});'
-        m = re.search(pattern2, html, re.S)
-        if not m:
-            raise RuntimeError("Не удалось найти JSON Next.js на странице")
-    return json.loads(m.group(1))
+    # находим все inline-скрипты, содержащие JSON
+    candidates = re.findall(r'<script[^>]*>(\{.*?\})</script>', html, re.S)
+    for raw in candidates:
+        try:
+            data = json.loads(raw)
+            if (isinstance(data, dict) and
+                "props" in data and
+                isinstance(data["props"], dict) and
+                "pageProps" in data["props"]):
+                return data
+        except json.JSONDecodeError:
+            continue
+    # Сохранение для отладки
+    with open("error_subnets.html", "w", encoding="utf-8") as f:
+        f.write(html)
+    raise RuntimeError(
+        "Не удалось найти JSON Next.js на странице.\n"
+        "Сохранён debug-файл error_subnets.html для анализа."
+    )
 
 
 def parse_subnets(data: dict) -> list:
     """
-    Из JSON-данных Next.js извлекает список подсетей и возвращает его.
+    Извлекает список подсетей из структуры Next.js JSON.
     """
     return (
         data
@@ -43,7 +55,7 @@ def parse_subnets(data: dict) -> list:
 
 def transform_subnet(s: dict) -> dict:
     """
-    Приводит объект подсети к нужному набору полей.
+    Преобразует объект подсети к словарю с нужными полями.
     """
     links = s.get("links", {}) or {}
     return {
