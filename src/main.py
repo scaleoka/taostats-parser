@@ -2,12 +2,15 @@ import cloudscraper
 import json
 import re
 import csv
+import time
+from pathlib import Path
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+
+URL = "https://taostats.io/subnets"
 
 
 def fetch_html(url: str) -> str:
-    """
-    Загружает HTML страницы с помощью cloudscraper и возвращает текст.
-    """
     scraper = cloudscraper.create_scraper()
     resp = scraper.get(url, timeout=30)
     resp.raise_for_status()
@@ -15,36 +18,42 @@ def fetch_html(url: str) -> str:
 
 
 def extract_next_data(html: str) -> dict:
-    """
-    Пытается найти и распарсить JSON-объект из любого <script>...</script>,
-    содержащего валидный JSON с ключами props → pageProps.
-    Если не находит, сохраняет HTML для отладки и выбрасывает ошибку.
-    """
-    # находим все inline-скрипты, содержащие JSON
-    candidates = re.findall(r'<script[^>]*>(\{.*?\})</script>', html, re.S)
-    for raw in candidates:
+    # Ищем встроенный JSON Next.js
+    m = re.search(r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    if m:
+        return json.loads(m.group(1))
+    # fallback: ищем JSON в любых <script>
+    for raw in re.findall(r'<script[^>]*>(\{.*?\})</script>', html, re.S):
         try:
             data = json.loads(raw)
-            if (isinstance(data, dict) and
-                "props" in data and
-                isinstance(data["props"], dict) and
-                "pageProps" in data["props"]):
+            if isinstance(data, dict) and "props" in data:
                 return data
         except json.JSONDecodeError:
             continue
-    # Сохранение для отладки
-    with open("error_subnets.html", "w", encoding="utf-8") as f:
-        f.write(html)
-    raise RuntimeError(
-        "Не удалось найти JSON Next.js на странице.\n"
-        "Сохранён debug-файл error_subnets.html для анализа."
-    )
+    return None
+
+
+def fetch_data_selenium(url: str) -> dict:
+    """
+    Запускает headless Chrome через Selenium и возвращает window.__NEXT_DATA__.
+    """
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    driver = webdriver.Chrome(options=options)
+    try:
+        driver.get(url)
+        time.sleep(5)
+        data = driver.execute_script("return window.__NEXT_DATA__ || null")
+        if data:
+            return data
+        raise RuntimeError("window.__NEXT_DATA__ не найден в Selenium")
+    finally:
+        driver.quit()
 
 
 def parse_subnets(data: dict) -> list:
-    """
-    Извлекает список подсетей из структуры Next.js JSON.
-    """
     return (
         data
         .get("props", {})
@@ -54,9 +63,6 @@ def parse_subnets(data: dict) -> list:
 
 
 def transform_subnet(s: dict) -> dict:
-    """
-    Преобразует объект подсети к словарю с нужными полями.
-    """
     links = s.get("links", {}) or {}
     return {
         "netuid": s.get("netuid"),
@@ -73,9 +79,6 @@ def transform_subnet(s: dict) -> dict:
 
 
 def save_to_csv(rows: list, filename: str):
-    """
-    Сохраняет список словарей в CSV-файл.
-    """
     if not rows:
         print("Нет данных для сохранения.")
         return
@@ -89,20 +92,21 @@ def save_to_csv(rows: list, filename: str):
 
 
 if __name__ == "__main__":
-    URL = "https://taostats.io/subnets"
-
-    print("Загружаем страницу…")
+    print("Загружаем HTML страницы…")
     html = fetch_html(URL)
 
-    print("Извлекаем JSON Next.js…")
+    print("Пробуем извлечь JSON из HTML…")
     data = extract_next_data(html)
 
-    print("Парсим список подсетей…")
+    if not data:
+        print("Не удалось найти JSON напрямую, запускаем Selenium…")
+        data = fetch_data_selenium(URL)
+
+    print("Парсим подсети из JSON…")
     subs = parse_subnets(data)
     print(f"Найдено подсетей: {len(subs)}")
 
     print("Трансформируем и сохраняем…")
     rows = [transform_subnet(s) for s in subs]
     save_to_csv(rows, "subnets.csv")
-
     print("Готово.")
