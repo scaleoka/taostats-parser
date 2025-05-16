@@ -1,7 +1,0 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-
-# Service account credentials (keep secret)
-*.json
