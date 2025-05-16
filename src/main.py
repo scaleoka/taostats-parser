@@ -1,142 +1,119 @@
-import cloudscraper
+import os
 import json
-import re
 import csv
 import time
-import shutil
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
+# URL страницы с таблицей подсетей
 URL = "https://taostats.io/subnets"
 
+# Читаем параметры для Google Sheets из переменных окружения
+SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
+SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
 
-def fetch_html(url: str) -> str:
-    """
-    Загружает HTML страницы с помощью cloudscraper и возвращает текст.
-    """
-    scraper = cloudscraper.create_scraper()
-    resp = scraper.get(url, timeout=30)
-    resp.raise_for_status()
-    return resp.text
+if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
+    raise RuntimeError('Не заданы переменные SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON')
 
+# Ищем и собираем данные из таблицы подсетей через undetected-chromedriver
 
-def extract_next_data(html: str) -> dict:
-    """
-    Пытается найти Next.js JSON в HTML.
-    """
-    # Поиск по id
-    m = re.search(r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
-    if m:
-        return json.loads(m.group(1))
-    # Альтернатива: любые блоки с JSON
-    for raw in re.findall(r'<script[^>]*>(\{.*?\})</script>', html, re.S):
-        try:
-            data = json.loads(raw)
-            if isinstance(data, dict) and "props" in data:
-                return data
-        except json.JSONDecodeError:
-            continue
-    return None
-
-
-def fetch_data_selenium(url: str) -> dict:
-    """
-    Запускает headless Chrome/Chromium через Selenium и возвращает window.__NEXT_DATA__.
-    """
-    options = Options()
-    # Делаем режим без GUI
-    options.add_argument("--headless")
+def fetch_subnets_table(url: str):
+    options = uc.ChromeOptions()
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    # Указываем путь к бинарнику Chrome/Chromium
-    chrome_bin = (shutil.which("google-chrome-stable") or
-                  shutil.which("google-chrome") or
-                  shutil.which("chromium-browser") or
-                  shutil.which("chromium"))
-    if chrome_bin:
-        options.binary_location = chrome_bin
-    # Устанавливаем драйвер
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    try:
-        driver.get(url)
-        time.sleep(10)  # ждём загрузки JS
-        data = driver.execute_script("return window.__NEXT_DATA__ || null")
-        if data and isinstance(data, dict):
-            return data
-        raise RuntimeError("window.__NEXT_DATA__ не найден через Selenium")
-    finally:
-        driver.quit()
 
+    driver = uc.Chrome(options=options)
+    driver.get(url)
 
-def parse_subnets(data: dict) -> list:
-    """
-    Извлекает список подсетей из структуры Next.js JSON.
-    """
-    return (
-        data
-        .get("props", {})
-        .get("pageProps", {})
-        .get("subnets", [])
+    # Ждём загрузки таблицы
+    wait = WebDriverWait(driver, 20)
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
+
+    # Скроллим страницу до конца, чтобы загрузить все строки
+    last_h = driver.execute_script("return document.body.scrollHeight")
+    while True:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1)
+        new_h = driver.execute_script("return document.body.scrollHeight")
+        if new_h == last_h:
+            break
+        last_h = new_h
+
+    rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+    data = []
+    for row in rows:
+        cols = row.find_elements(By.TAG_NAME, "td")
+        if len(cols) < 9:
+            continue
+        netuid = cols[0].text.strip()
+        name = cols[1].text.strip()
+        registration_date = cols[2].text.strip()
+        price = cols[3].text.strip()
+        emission = cols[4].text.strip()
+        registration_cost = cols[5].text.strip()
+        vtrust = cols[6].text.strip()
+        key = cols[8].text.strip()
+
+        # Ссылки GitHub/Discord в колонке с иконками
+        github = discord = None
+        for a in cols[7].find_elements(By.TAG_NAME, "a"):
+            href = a.get_attribute("href")
+            if 'github.com' in href:
+                github = href
+            elif 'discord' in href:
+                discord = href
+
+        data.append({
+            "netuid": netuid,
+            "name": name,
+            "registration_date": registration_date,
+            "price": price,
+            "emission": emission,
+            "registration_cost": registration_cost,
+            "github": github,
+            "discord": discord,
+            "key": key,
+            "vtrust": vtrust
+        })
+
+    driver.quit()
+    return data
+
+# Функция для записи данных в Google Sheets
+
+def save_to_google_sheets(rows):
+    # Загружаем учётные данные из JSON
+    info = json.loads(SERVICE_ACCOUNT_JSON)
+    creds = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=['https://www.googleapis.com/auth/spreadsheets']
     )
+    service = build('sheets', 'v4', credentials=creds)
+    sheet = service.spreadsheets()
 
+    # Подготавливаем значения (заголовок + строки)
+    headers = list(rows[0].keys())
+    values = [headers] + [[row[h] for h in headers] for row in rows]
 
-def transform_subnet(s: dict) -> dict:
-    """
-    Преобразует объект подсети к словарю с нужными полями.
-    """
-    links = s.get("links", {}) or {}
-    return {
-        "netuid": s.get("netuid"),
-        "name": s.get("name"),
-        "registration_date": s.get("registration_timestamp"),
-        "price": s.get("price"),
-        "emission": s.get("emission"),
-        "registration_cost": s.get("registration_cost"),
-        "github": links.get("github"),
-        "discord": links.get("discord"),
-        "key": s.get("key"),
-        "vtrust": s.get("vTrust")
-    }
-
-
-def save_to_csv(rows: list, filename: str):
-    """
-    Сохраняет список словарей в CSV.
-    """
-    if not rows:
-        print("Нет данных для сохранения.")
-        return
-    fieldnames = list(rows[0].keys())
-    with open(filename, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-    print(f"Данные сохранены в {filename}")
-
+    body = {'values': values}
+    sheet.values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range='A1',
+        valueInputOption='RAW',
+        body=body
+    ).execute()
+    print(f"Данные записаны в таблицу {SPREADSHEET_ID}")
 
 if __name__ == "__main__":
-    print("Загружаем HTML страницы…")
-    html = fetch_html(URL)
+    print("Собираем подсети через Selenium...")
+    subnets = fetch_subnets_table(URL)
+    print(f"Найдено строк: {len(subnets)}")
 
-    print("Пробуем извлечь JSON из HTML…")
-    data = extract_next_data(html)
-
-    if not data:
-        print("Не найден JSON в HTML, пробуем через Selenium…")
-        data = fetch_data_selenium(URL)
-
-    print("Парсим список подсетей…")
-    subs = parse_subnets(data)
-    print(f"Найдено подсетей: {len(subs)}")
-
-    print("Трансформируем подсети…")
-    rows = [transform_subnet(s) for s in subs]
-
-    print("Сохраняем в subnets.csv…")
-    save_to_csv(rows, "subnets.csv")
-
+    print("Сохраняем в Google Sheets...")
+    save_to_google_sheets(subnets)
     print("Готово.")
