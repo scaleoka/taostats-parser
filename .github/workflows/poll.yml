@@ -3,7 +3,6 @@ name: Poll Taostats Parser
 on:
   workflow_dispatch:
   schedule:
-    # Запускать раз в час по крону
     - cron: '0 * * * *'
 
 jobs:
