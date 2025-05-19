@@ -5,7 +5,7 @@ import os
 import re
 import json
 import requests
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
@@ -20,67 +20,56 @@ if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
         "SPREADSHEET_ID и GOOGLE_SERVICE_ACCOUNT_JSON"
     )
 
-def parse_initial_data(html: str) -> list[dict]:
-    m = re.search(
-        r'<script id="__NEXT_DATA__"[^>]*>(.+?)</script>',
-        html, re.DOTALL
-    )
-    if not m:
-        raise RuntimeError("Не найден __NEXT_DATA__ в HTML")
-    data = json.loads(m.group(1))
-    subs = data.get("props", {}).get("pageProps", {}).get("subnets")
-    if not isinstance(subs, list):
-        raise RuntimeError("Не найден массив subnets в __NEXT_DATA__")
-    return subs
+def fetch_via_rsc() -> list[dict]:
+    print("1a) Пытаемся получить subnets через RSC-endpoint…")
+    body = {"page": 1, "limit": -1, "order": "market_cap_desc"}
+    headers = {"Accept": "text/x-component"}
+    resp = requests.post(URL, json=body, headers=headers, timeout=30)
+    resp.raise_for_status()
+    text = resp.text
 
-def fetch_subnets() -> list[dict]:
-    # Попробовать встроенный JSON
-    resp = requests.get(URL, timeout=30)
+    # Найти самый большой JSON-массив в ответе
+    match = re.search(r"(\[\s*\{[\s\S]*\}\s*\])", text)
+    if not match:
+        print("→ Не удалось найти JSON-массив в RSC-ответе")
+        return []
+
     try:
-        subs = parse_initial_data(resp.text)
-        print(f"→ Inline JSON: {len(subs)} подсетей")
+        subs = json.loads(match.group(1))
+        print(f"→ RSC вернуло подсетей: {len(subs)}")
         return subs
-    except Exception as e:
-        print(f"→ Inline JSON failed ({e}), falling back to Playwright…")
+    except json.JSONDecodeError:
+        print("→ Ошибка декодирования JSON из RSC-ответа")
+        return []
 
-    # Playwright fallback
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+def fetch_via_playwright() -> list[dict]:
+    print("1b) Фолбэк: скрапим через Playwright + CSS-селектор…")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
         page = browser.new_page()
-        # Ждём только DOMContentLoaded, не networkidle
-        page.goto(URL, timeout=60_000, wait_until="domcontentloaded")
-        try:
-            page.wait_for_selector(
-                'div[role="row"][data-rowindex]',
-                timeout=60_000
-            )
-        except PlaywrightTimeoutError:
-            # Дополнительная пауза, если нужно
-            page.wait_for_timeout(5_000)
-
-        subs = page.evaluate(
-            """() => {
-                return Array.from(
-                  document.querySelectorAll('div[role="row"][data-rowindex]')
-                ).map(row => {
-                  const cells = Array.from(row.querySelectorAll('div[role="cell"]'));
-                  return {
-                    netuid:            cells[0]?.innerText.trim() || "",
-                    name:              cells[1]?.innerText.trim() || "",
-                    registration_date: cells[2]?.innerText.trim() || "",
-                    price:             cells[3]?.innerText.trim() || "",
-                    emission:          cells[4]?.innerText.trim() || "",
-                    registration_cost: cells[5]?.innerText.trim() || "",
-                    github:            cells[6]?.innerText.trim() || "",
-                    discord:           cells[7]?.innerText.trim() || "",
-                    key:               cells[8]?.innerText.trim() || "",
-                    vtrust:            cells[9]?.innerText.trim() || "",
-                  };
-                });
-            }"""
-        )
+        page.goto(URL, wait_until="domcontentloaded", timeout=60_000)
+        # подождём появления строк DataGrid
+        page.wait_for_selector('div[role="row"][data-rowindex]', timeout=60_000)
+        rows = page.query_selector_all('div[role="row"][data-rowindex]')
+        subs = []
+        for row in rows:
+            cells = row.query_selector_all('div[role="cell"]')
+            if len(cells) < 10:
+                continue
+            subs.append({
+                "netuid":            cells[0].inner_text().strip(),
+                "name":              cells[1].inner_text().strip(),
+                "registration_date": cells[2].inner_text().strip(),
+                "price":             cells[3].inner_text().strip(),
+                "emission":          cells[4].inner_text().strip(),
+                "registration_cost": cells[5].inner_text().strip(),
+                "github":            cells[6].inner_text().strip(),
+                "discord":           cells[7].inner_text().strip(),
+                "key":               cells[8].inner_text().strip(),
+                "vtrust":            cells[9].inner_text().strip(),
+            })
         browser.close()
-        print(f"→ Playwright scraped: {len(subs)} подсетей")
+        print(f"→ Playwright скрапнул подсетей: {len(subs)}")
         return subs
 
 def write_to_sheets(subnets: list[dict]):
@@ -91,17 +80,14 @@ def write_to_sheets(subnets: list[dict]):
     )
     service = build("sheets", "v4", credentials=creds).spreadsheets()
 
-    headers = [
-        "netuid","name","registration_date","price","emission",
-        "registration_cost","github","discord","key","vtrust"
-    ]
-    values = [headers] + [[s.get(h, "") for h in headers] for s in subnets]
+    headers = ["netuid", "name", "registration_date", "price", "emission",
+               "registration_cost", "github", "discord", "key", "vtrust"]
+    values = [headers] + [[s[h] for h in headers] for s in subnets]
 
     service.values().clear(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{SHEET_NAME}'!A1:J"
     ).execute()
-
     service.values().update(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{SHEET_NAME}'!A1",
@@ -112,8 +98,13 @@ def write_to_sheets(subnets: list[dict]):
     print(f"✅ Записано {len(subnets)} подсетей в лист '{SHEET_NAME}'")
 
 def main():
-    print("1) Собираем подсети…")
-    subs = fetch_subnets()
+    # 1) Попытка через RSC
+    subs = fetch_via_rsc()
+    # 2) Если не вышло — фолбэк на Playwright
+    if not subs:
+        subs = fetch_via_playwright()
+
+    print(f"→ Итого подсетей: {len(subs)}")
     print("2) Пишем в Google Sheets…")
     write_to_sheets(subs)
     print("Готово.")
