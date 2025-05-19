@@ -7,3 +7,5 @@ gspread
 oauth2client
 requests
 playwright
+google-auth-httplib2
+google-auth-oauthlib
