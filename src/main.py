@@ -19,7 +19,10 @@ SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
 if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
     raise RuntimeError('Не заданы переменные SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON')
 
-# Ищем и собираем данные из таблицы подсетей через undetected-chromedriver
+# Имя листа для записи
+SHEET_NAME = 'taostats stats'
+
+# Функция для сбора данных через undetected-chromedriver
 
 def fetch_subnets_table(url: str):
     options = uc.ChromeOptions()
@@ -103,11 +106,11 @@ def save_to_google_sheets(rows):
     body = {'values': values}
     sheet.values().update(
         spreadsheetId=SPREADSHEET_ID,
-        range='A1',
+        range=f"'{SHEET_NAME}'!A1",
         valueInputOption='RAW',
         body=body
     ).execute()
-    print(f"Данные записаны в таблицу {SPREADSHEET_ID}")
+    print(f"Данные записаны в лист '{SHEET_NAME}' таблицы {SPREADSHEET_ID}")
 
 if __name__ == "__main__":
     print("Собираем подсети через Selenium...")
