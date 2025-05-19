@@ -1,4 +1,3 @@
-# .github/workflows/poll-taostats-parser.yml
 name: Poll Taostats Parser
 
 on:
@@ -25,9 +24,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Install Playwright browsers
-        run: |
-          playwright install
-        # ensure the playwright CLI is on PATH
+        run: playwright install
         env:
           CI: true
 
