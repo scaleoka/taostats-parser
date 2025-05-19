@@ -3,3 +3,4 @@ undetected-chromedriver
 selenium
 google-api-python-client
 google-auth
+gspread
