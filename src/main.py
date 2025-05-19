@@ -1,145 +1,135 @@
+#!/usr/bin/env python3
 import os
-import json
 import time
-import re
-import csv
+import json
 import cloudscraper
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
-# --- КОНФИГ ---
-PAGE_URL      = "https://taostats.io/subnets"
+# --- Конфиг ---
+URL         = "https://taostats.io/subnets"
+SHEET_NAME  = "taostats stats"
 SPREADSHEET_ID       = os.getenv("SPREADSHEET_ID")
-SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-SHEET_NAME           = "taostats stats"
+GOOGLE_JSON         = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
+if not SPREADSHEET_ID or not GOOGLE_JSON:
     raise RuntimeError("Не заданы SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON")
 
-# --- 1) Пробуем найти inline __NEXT_DATA__ и взять оттуда все subnets ---
-def try_extract_from_html():
-    scraper = cloudscraper.create_scraper()
-    html = scraper.get(PAGE_URL, timeout=30).text
-    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+# --- Google Sheets setup ---
+creds_dict = json.loads(GOOGLE_JSON)
+scope = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+gc = gspread.authorize(creds)
+sheet = gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+
+def try_inline():
+    """Пробуем взять из <script id="__NEXT_DATA__"> (обычно только первые 10)."""
+    html = cloudscraper.create_scraper().get(URL, timeout=30).text
+    m = __import__('re').search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, __import__('re').S)
     if not m:
         return None
     data = json.loads(m.group(1))
     return data.get("props", {}).get("pageProps", {}).get("subnets")
 
-# --- 2) Фолбэк на Selenium: Show All → либо постраничная навигация ---
-def fetch_via_selenium():
-    print("   → Запускаем Selenium-фолбэк…")
+def fetch_all_via_selenium():
+    """
+    Открываем страницу в undetected-chromedriver,
+    ждём таблицу и перебираем все страницы, кликая на кнопку Next.
+    """
     options = uc.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+
     driver = uc.Chrome(options=options)
-    driver.get(PAGE_URL)
+    driver.get(URL)
 
     wait = WebDriverWait(driver, 20)
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
 
-    rows_data = []
-
-    try:
-        # 2a) Попытка переключить Show X → All
-        sel = Select(driver.find_element(By.CSS_SELECTOR, ".dataTables_length select"))
-        for o in sel.options:
-            if "all" in o.text.lower():
-                sel.select_by_visible_text(o.text)
-                time.sleep(2)
-                break
-        # читаем сразу все строки
+    collected = []
+    page = 1
+    while True:
+        # ждём строки текущей страницы
+        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table tbody tr")))
         rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-    except Exception:
-        # 2b) Если Show All нет, крутим по страницам
-        print("   → Show ‘All’ не найден, переходим к постраничной навигации…")
-        while True:
-            wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table tbody tr")))
-            rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-            # собираем данные с текущей страницы
-            for r in rows:
-                rows_data.append(r)
-            # ищем кнопку Next
-            next_btn = driver.find_element(By.CSS_SELECTOR, ".dataTables_paginate .next")
-            if "disabled" in next_btn.get_attribute("class"):
-                break
-            next_btn.click()
-            time.sleep(1)
-        # На этом rows_data — список WebElement-строк с **всех** страниц
-        rows = rows_data
+        print(f"  — Страница {page}: строк {len(rows)}")
+        for r in rows:
+            cols = r.find_elements(By.TAG_NAME, "td")
+            if len(cols) < 9: 
+                continue
+            # собираем поля
+            netuid = cols[0].text.strip()
+            name   = cols[1].text.strip()
+            regd   = cols[2].text.strip()
+            price  = cols[3].text.strip()
+            emis   = cols[4].text.strip()
+            rcost  = cols[5].text.strip()
+            vtrust = cols[6].text.strip()
+            key    = cols[8].text.strip()
+            gh = dc = ""
+            for a in cols[7].find_elements(By.TAG_NAME, "a"):
+                href = a.get_attribute("href")
+                if "github.com" in href: gh = href
+                if "discord"   in href: dc = href
+            collected.append({
+                "netuid": netuid,
+                "name": name,
+                "registration_date": regd,
+                "price": price,
+                "emission": emis,
+                "registration_cost": rcost,
+                "github": gh,
+                "discord": dc,
+                "key": key,
+                "vtrust": vtrust
+            })
 
-    # Парсим окончательный список <tr>
-    result = []
-    for row in rows:
-        cols = row.find_elements(By.TAG_NAME, "td")
-        if len(cols) < 9:
-            continue
-        netuid = cols[0].text.strip()
-        name   = cols[1].text.strip()
-        regd   = cols[2].text.strip()
-        price  = cols[3].text.strip()
-        emis   = cols[4].text.strip()
-        rcost  = cols[5].text.strip()
-        vtrust = cols[6].text.strip()
-        key    = cols[8].text.strip()
-
-        gh = dc = None
-        for a in cols[7].find_elements(By.TAG_NAME, "a"):
-            href = a.get_attribute("href")
-            if "github.com" in href: gh = href
-            elif "discord" in href:   dc = href
-
-        result.append({
-            "netuid": netuid,
-            "name": name,
-            "registration_date": regd,
-            "price": price,
-            "emission": emis,
-            "registration_cost": rcost,
-            "github": gh,
-            "discord": dc,
-            "key": key,
-            "vtrust": vtrust
-        })
+        # пытаемся найти кнопку Next (MUI/React-пагинация)
+        try:
+            nxt = driver.find_element(By.CSS_SELECTOR, "button[aria-label='Go to next page']")
+        except:
+            break
+        # если она задизейблена — выходим
+        if nxt.get_attribute("disabled") or "disabled" in nxt.get_attribute("class"):
+            break
+        nxt.click()
+        page += 1
+        time.sleep(1)
 
     driver.quit()
-    return result
+    return collected
 
-# --- 3) Пишем в Google Sheets ---
-def save_to_sheets(rows):
-    info = json.loads(SERVICE_ACCOUNT_JSON)
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    svc = build("sheets", "v4", credentials=creds).spreadsheets()
-    headers = list(rows[0].keys())
-    values  = [headers] + [[r[h] for h in headers] for r in rows]
-    svc.values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"'{SHEET_NAME}'!A1",
-        valueInputOption="RAW",
-        body={"values": values}
-    ).execute()
-    print(f"✅ Записано {len(rows)} строк в лист '{SHEET_NAME}'")
+def write_to_sheet(rows):
+    """Чистим лист и заливаем заголовок + все строки."""
+    headers = ["netuid","name","registration_date","price",
+               "emission","registration_cost","github",
+               "discord","key","vtrust"]
+    sheet.clear()
+    payload = [headers] + [[r[h] for h in headers] for r in rows]
+    sheet.update(payload)
+    print(f"✅ Всего записано {len(rows)} строк в '{SHEET_NAME}'")
 
-# --- MAIN ---
 if __name__ == "__main__":
-    subs = try_extract_from_html()
+    print("1) Пробуем встроенный JSON…")
+    subs = try_inline()
     if subs:
-        print("1) Inline JSON найден, подсетей:", len(subs))
-    else:
-        print("1) Inline JSON не найден, переходим к Selenium…")
-        subs = fetch_via_selenium()
-        print("   Selenium собрал подсетей:", len(subs))
+        print(f" → Нашли {len(subs)} подсетей в inline, но это только первая страница.")
+        # не используем inline, потому что нужно всё: переключаемся на Selenium
+    print("2) Собираем через Selenium (перебор всех страниц)…")
+    all_subs = fetch_all_via_selenium()
+    print(f" → Всего подсетей собрано: {len(all_subs)}")
 
-    if not subs:
+    if not all_subs:
         raise RuntimeError("Не удалось получить ни одной подсети")
 
-    print("2) Сохраняем в Google Sheets…")
-    save_to_sheets(subs)
+    print("3) Записываем в Google Sheets…")
+    write_to_sheet(all_subs)
     print("Готово.")
