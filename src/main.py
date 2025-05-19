@@ -1,93 +1,106 @@
 #!/usr/bin/env python3
 import os
-import re
+import time
 import json
-import requests
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+import cloudscraper
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
-# Конфиг из окружения
-PAGE_URL      = "https://taostats.io/subnets"
+# --- Настройка через ENV ---
+URL         = "https://taostats.io/subnets"
+SHEET_NAME  = "taostats stats"
 SPREADSHEET_ID       = os.getenv("SPREADSHEET_ID")
-SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-SHEET_NAME           = "taostats stats"
+GOOGLE_JSON         = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
+if not SPREADSHEET_ID or not GOOGLE_JSON:
     raise RuntimeError("Не заданы SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON")
 
-def fetch_build_id(html: str) -> str:
-    """Ищем актуальный buildId в HTML страницы."""
-    m = re.search(r'"buildId":"([^"]+)"', html)
-    if not m:
-        raise RuntimeError("Не удалось найти buildId в HTML")  # {{buildId}}:contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
-    return m.group(1)
+# --- Инициализация Google Sheets ---
+creds_dict = json.loads(GOOGLE_JSON)
+scope = ["https://www.googleapis.com/auth/spreadsheets",
+         "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+gc = gspread.authorize(creds)
+sheet = gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-def fetch_all_subnets() -> list:
-    """Перебираем страницы Next.js JSON endpoint пока не получим пустой массив."""
-    # 1) Получаем HTML и вытягиваем buildId
-    resp = requests.get(PAGE_URL, timeout=30)
-    resp.raise_for_status()
-    build_id = fetch_build_id(resp.text)
-    print("Найден buildId:", build_id)
+def fetch_all_subnets():
+    """
+    Открывает страницу в headless-хроме, ждёт отрисовки таблицы
+    и кликает на кнопку 'Next page' до тех пор, пока она не задизейблена.
+    Возвращает список всех строк (каждая — список текстов td или href).
+    """
+    options = uc.ChromeOptions()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
 
-    # 2) Подставляем в URL /_next/data/{buildId}/subnets.json?page={i}
-    all_subs = []
+    driver = uc.Chrome(options=options)
+    driver.get(URL)
+
+    wait = WebDriverWait(driver, 20)
+    # Ждём появления первой строки
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
+
+    all_rows = []
     page = 1
     while True:
-        url = f"https://taostats.io/_next/data/{build_id}/subnets.json?page={page}"
-        r = requests.get(url, timeout=30)
-        if r.status_code != 200:
-            # страницы закончились или endpoint недоступен
+        # Считываем все <tr> текущей страницы
+        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table tbody tr")))
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+        print(f" — Страница {page}: строк {len(rows)}")
+        for row in rows:
+            cols = row.find_elements(By.TAG_NAME, "td")
+            if len(cols) < 9:
+                continue
+            # собираем текст/ссылки из ячеек
+            rec = []
+            for idx, col in enumerate(cols):
+                # ссылки в 7-й ячейке
+                if idx == 7:
+                    hrefs = [a.get_attribute("href") for a in col.find_elements(By.TAG_NAME, "a")]
+                    # GitHub и/или Discord
+                    rec.append(" ".join(hrefs))
+                else:
+                    rec.append(col.text.strip())
+            # нам нужны только первые 10 полей: netuid,name,reg_date,price,emission,reg_cost,github+discord,key,vtrust
+            all_rows.append(rec[:10])
+        # Находим кнопку Next (MUI aria-label)
+        btns = driver.find_elements(By.CSS_SELECTOR, "button[aria-label*='next']")
+        if not btns:
             break
-        data = r.json()
-        subs = data.get("pageProps", {}).get("subnets") or []
-        if not subs:
+        nxt = btns[-1]
+        # Проверяем атрибут aria-disabled
+        if nxt.get_attribute("aria-disabled") == "true":
             break
-        print(f"Страница {page}: получено {len(subs)} подсетей")
-        all_subs.extend(subs)
+        # Кликаем и ждём подгрузки
+        nxt.click()
         page += 1
+        time.sleep(1)
 
-    return all_subs
+    driver.quit()
+    return all_rows
 
-def transform(sub: dict) -> dict:
-    links = sub.get("links") or {}
-    return {
-        "netuid":            sub.get("netuid"),
-        "name":              sub.get("name"),
-        "registration_date": sub.get("registration_timestamp"),
-        "price":             sub.get("price"),
-        "emission":          sub.get("emission"),
-        "registration_cost": sub.get("registration_cost"),
-        "github":            links.get("github"),
-        "discord":           links.get("discord"),
-        "key":               sub.get("key"),
-        "vtrust":            sub.get("vTrust"),
-    }
-
-def save_to_sheets(rows: list):
-    info = json.loads(SERVICE_ACCOUNT_JSON)
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    service = build("sheets", "v4", credentials=creds).spreadsheets()
-    headers = list(rows[0].keys())
-    values  = [headers] + [[row[h] for h in headers] for row in rows]
-    service.values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"'{SHEET_NAME}'!A1",
-        valueInputOption="RAW",
-        body={"values": values}
-    ).execute()
-    print(f"✅ Всего записано {len(rows)} строк в лист '{SHEET_NAME}'")
+def write_to_sheet(rows):
+    """
+    Очищает лист и заливает в него заголовок + все собранные строки.
+    """
+    headers = ["netuid","name","registration_date","price",
+               "emission","registration_cost","github_discord",
+               "key","vtrust"]
+    # чистим лист
+    sheet.clear()
+    payload = [headers] + rows
+    sheet.update(payload)
+    print(f"✅ Всего записано {len(rows)} подсетей в лист '{SHEET_NAME}'")
 
 if __name__ == "__main__":
-    print("Собираем все подсети через JSON endpoint…")
-    subs = fetch_all_subnets()
-    if not subs:
-        raise RuntimeError("Не удалось вытянуть ни одной подсети")
-    print("Всего подсетей:", len(subs))
-
-    print("Трансформируем и сохраняем в Google Sheets…")
-    rows = [transform(s) for s in subs]
-    save_to_sheets(rows)
+    print("Собираем все подсети через Selenium…")
+    data = fetch_all_subnets()
+    print(f"Найдено всего {len(data)} подсетей")
+    print("Записываем в Google Sheets…")
+    write_to_sheet(data)
     print("Готово.")
