@@ -1,7 +1,8 @@
 import os
+import re
 import json
 import time
-import csv
+import requests
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -9,114 +10,102 @@ from selenium.webdriver.support import expected_conditions as EC
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# URL страницы Subnets
-URL = "https://taostats.io/subnets"
-
-# Параметры Google Sheets из секретов окружения
-SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
-SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
-SHEET_NAME = 'taostats stats'
+# Конфиг
+PAGE_URL      = "https://taostats.io/subnets"
+SPREADSHEET_ID       = os.getenv("SPREADSHEET_ID")
+SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+SHEET_NAME           = "taostats stats"
 
 if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
-    raise RuntimeError('Не заданы переменные SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON')
+    raise RuntimeError("Не заданы SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON")
 
-def fetch_subnets_table(url: str):
-    """
-    Собирает все строки таблицы Subnets, переключая DataTables на «All».
-    """
-    options = uc.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
+def fetch_build_id(html: str) -> str:
+    m = re.search(r'"buildId":"([^"]+)"', html)
+    if not m:
+        raise RuntimeError("Не найден buildId в HTML")
+    return m.group(1)
 
-    driver = uc.Chrome(options=options)
-    driver.get(url)
+def try_json_endpoint() -> list:
+    html     = requests.get(PAGE_URL, timeout=30).text
+    build_id = fetch_build_id(html)
+    url      = f"https://taostats.io/_next/data/{build_id}/subnets.json"
+    resp     = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    data     = resp.json()
+    return data["pageProps"]["subnets"]
 
+def fetch_with_selenium() -> list:
+    opt = uc.ChromeOptions()
+    opt.add_argument("--headless=new")
+    opt.add_argument("--no-sandbox")
+    opt.add_argument("--disable-dev-shm-usage")
+
+    driver = uc.Chrome(options=opt)
+    driver.get(PAGE_URL)
     wait = WebDriverWait(driver, 20)
-    # Ждём, пока появится хотя бы одна строка
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")))
 
-    # Переключаем селектор «Show X entries» на All
-    length_select = Select(driver.find_element(By.CSS_SELECTOR, ".dataTables_length select"))
-    for opt in length_select.options:
-        if 'all' in opt.text.lower():
-            length_select.select_by_visible_text(opt.text)
+    # переключаем Show X → All
+    select = Select(driver.find_element(By.CSS_SELECTOR, ".dataTables_length select"))
+    for o in select.options:
+        if "all" in o.text.lower():
+            select.select_by_visible_text(o.text)
             break
-    # Ждём перерисовки таблицы
     time.sleep(2)
 
-    # Теперь в DOM все строки
     rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-    data = []
-    for row in rows:
-        cols = row.find_elements(By.TAG_NAME, "td")
-        if len(cols) < 9:
+    out = []
+    for r in rows:
+        cols = r.find_elements(By.TAG_NAME, "td")
+        if len(cols) < 9: 
             continue
-
-        netuid            = cols[0].text.strip()
-        name              = cols[1].text.strip()
-        registration_date = cols[2].text.strip()
-        price             = cols[3].text.strip()
-        emission          = cols[4].text.strip()
-        registration_cost = cols[5].text.strip()
-        vtrust            = cols[6].text.strip()
-        key               = cols[8].text.strip()
-
-        # Ссылки GitHub / Discord
-        github = discord = None
+        netuid = cols[0].text.strip()
+        name   = cols[1].text.strip()
+        regd   = cols[2].text.strip()
+        price  = cols[3].text.strip()
+        emis   = cols[4].text.strip()
+        rcost  = cols[5].text.strip()
+        vtrust = cols[6].text.strip()
+        key    = cols[8].text.strip()
+        gh = dc = None
         for a in cols[7].find_elements(By.TAG_NAME, "a"):
             href = a.get_attribute("href")
-            if "github.com" in href:
-                github = href
-            elif "discord" in href:
-                discord = href
-
-        data.append({
-            "netuid":            netuid,
-            "name":              name,
-            "registration_date": registration_date,
-            "price":             price,
-            "emission":          emission,
-            "registration_cost": registration_cost,
-            "github":            github,
-            "discord":           discord,
-            "key":               key,
-            "vtrust":            vtrust,
+            if "github.com" in href: gh = href
+            if "discord"   in href: dc = href
+        out.append({
+            "netuid": netuid, "name": name, "registration_date": regd,
+            "price": price, "emission": emis, "registration_cost": rcost,
+            "github": gh, "discord": dc, "key": key, "vtrust": vtrust
         })
-
     driver.quit()
-    return data
+    return out
 
-def save_to_google_sheets(rows: list):
-    """
-    Записывает список словарей в указанный лист Google Sheets.
-    """
+def save_to_sheets(rows: list):
     info = json.loads(SERVICE_ACCOUNT_JSON)
     creds = service_account.Credentials.from_service_account_info(
-        info,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
-    service = build("sheets", "v4", credentials=creds)
-    sheet = service.spreadsheets()
-
+    svc = build("sheets", "v4", credentials=creds).spreadsheets()
     headers = list(rows[0].keys())
-    values = [headers] + [[row[h] for h in headers] for row in rows]
-
-    body = {"values": values}
-    sheet.values().update(
+    values  = [headers] + [[r[h] for h in headers] for r in rows]
+    svc.values().update(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{SHEET_NAME}'!A1",
         valueInputOption="RAW",
-        body=body
+        body={"values": values}
     ).execute()
-
-    print(f"Данные записаны в лист '{SHEET_NAME}' таблицы {SPREADSHEET_ID}")
+    print(f"✅ Записано {len(rows)} строк в лист '{SHEET_NAME}'")
 
 if __name__ == "__main__":
-    print("Собираем все подсети через undetected-chromedriver…")
-    subnets = fetch_subnets_table(URL)
-    print(f"Найдено подсетей: {len(subnets)}")
+    try:
+        print("Попытка через _next/data JSON…")
+        subs = try_json_endpoint()
+        print(" → JSON endpoint сработал, подсетей:", len(subs))
+    except Exception as e:
+        print("JSON endpoint упал:", e)
+        print("Переключаемся на Selenium…")
+        subs = fetch_with_selenium()
+        print(" → Selenium собрал подсетей:", len(subs))
 
-    print("Записываем в Google Sheets…")
-    save_to_google_sheets(subnets)
+    save_to_sheets(subs)
     print("Готово.")
