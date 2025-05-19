@@ -1,100 +1,103 @@
-#!/usr/bin/env python3
-# main.py — TaoStats Subnets Parser
-
 import os
+import re
 import json
 import time
-
+import requests
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
 import gspread
-from google.oauth2.service_account import Credentials
+from oauth2client.service_account import ServiceAccountCredentials
 
-# --- Selenium-парсер всех подсетей с виртуальным скроллом ---
-def fetch_all_subnets(url="https://taostats.io/subnets", timeout=60, pause=1):
-    driver = uc.Chrome()
-    driver.get(url)
-    wait = WebDriverWait(driver, 20)
-    # ждём пока появится хотя бы одна строка
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[role='row'][data-rowindex]")))
-    start = time.time()
-    prev_count = 0
+URL = "https://taostats.io/subnets"
+SHEET_NAME = "taostats stats"
 
-    # скроллим вниз, пока не перестанут подтягиваться новые строки
-    while time.time() - start < timeout:
-        rows = driver.find_elements(By.CSS_SELECTOR, "div[role='row'][data-rowindex]")
-        count = len(rows)
-        driver.execute_script("window.scrollBy(0, document.body.scrollHeight);")
-        time.sleep(pause)
-        if count == prev_count:
-            break
-        prev_count = count
+def get_service_account_credentials():
+    creds_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not creds_json:
+        raise RuntimeError("Не заданы переменные SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON")
+    return json.loads(creds_json)
 
-    # парсим каждую строку
-    subs = []
-    rows = driver.find_elements(By.CSS_SELECTOR, "div[role='row'][data-rowindex]")
-    for row in rows:
-        cells = row.find_elements(By.CSS_SELECTOR, "div[role='cell']")
-        # здесь предполагается, что столбцы идут в порядке:
-        # netuid, name, registration_date, price, emission,
-        # registration_cost, github, discord, key, vtrust
-        subs.append({
-            "netuid": cells[0].text,
-            "name": cells[1].text,
-            "registration_date": cells[2].text,
-            "price": cells[3].text,
-            "emission": cells[4].text,
-            "registration_cost": cells[5].text,
-            "github": cells[6].text,
-            "discord": cells[7].text,
-            "key": cells[8].text,
-            "vtrust": cells[9].text,
-        })
-
-    driver.quit()
-    return subs
-
-# --- Запись в Google Sheets ---
-def write_to_sheet(subnets, spreadsheet_id, credentials_json, sheet_name="taostats stats"):
-    creds = Credentials.from_service_account_info(
-        json.loads(credentials_json),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
-    gs = gspread.Client(auth=creds)
-    sh = gs.open_by_key(spreadsheet_id)
+def write_to_sheets(subnets):
+    SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+    if not SPREADSHEET_ID:
+        raise RuntimeError("Не заданы переменные SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON")
+    creds = get_service_account_credentials()
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    gc = gspread.service_account_from_dict(creds)
+    sh = gc.open_by_key(SPREADSHEET_ID)
     try:
-        ws = sh.worksheet(sheet_name)
-        ws.clear()
+        ws = sh.worksheet(SHEET_NAME)
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(sheet_name, rows="1000", cols="20")
-
-    # Заголовки
-    headers = ["netuid","name","registration_date","price","emission",
-               "registration_cost","github","discord","key","vtrust"]
+        ws = sh.add_worksheet(title=SHEET_NAME, rows="1000", cols="8")
+    ws.clear()
+    headers = ["netuid", "subnet_name", "github_repo", "subnet_contact", "subnet_url", "discord", "description", "additional"]
     ws.append_row(headers)
-
-    # Данные
     for s in subnets:
-        ws.append_row([s[h] for h in headers])
+        row = [
+            s.get("netuid"),
+            s.get("subnet_name"),
+            s.get("github_repo"),
+            s.get("subnet_contact"),
+            s.get("subnet_url"),
+            s.get("discord"),
+            s.get("description"),
+            s.get("additional")
+        ]
+        ws.append_row(row)
+    print(f"✅ Всего записано {len(subnets)} подсетей в лист '{SHEET_NAME}'")
+
+def fetch_all_subnets_via_regex():
+    resp = requests.get(URL)
+    html = resp.text
+    # Ищем первый JSON-массив объектов {...},{...},...
+    m = re.search(r'(\[\s*\{.+?\}\s*\])', html, re.DOTALL)
+    if not m:
+        raise RuntimeError("Не удалось найти JSON-массив подсетей в HTML")
+    return json.loads(m.group(1))
+
+def fetch_all_subnets_via_selenium():
+    driver = uc.Chrome()
+    driver.get(URL)
+    wait = WebDriverWait(driver, 15)
+    # Ждём, пока появится виртуальный скроллер таблицы
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiDataGrid-virtualScroller")))
+    prev_count = 0
+    # Скроллим вниз, пока не перестанут появляться новые строки
+    while True:
+        driver.execute_script("window.scrollBy(0, window.innerHeight);")
+        time.sleep(1)
+        rows = driver.find_elements(By.CSS_SELECTOR, "div[role='row'][data-rowindex]")
+        if len(rows) == prev_count:
+            break
+        prev_count = len(rows)
+    page_src = driver.page_source
+    driver.quit()
+    m = re.search(r'(\[\s*\{.+?\}\s*\])', page_src, re.DOTALL)
+    if not m:
+        raise RuntimeError("Не удалось найти JSON-массив подсетей через Selenium")
+    return json.loads(m.group(1))
+
+def fetch_all_subnets():
+    try:
+        return fetch_all_subnets_via_regex()
+    except Exception as e:
+        print("1) Regex failed:", e)
+    try:
+        return fetch_all_subnets_via_selenium()
+    except Exception as e:
+        print("2) Selenium failed:", e)
+    raise RuntimeError("Не удалось спарсить подсети любым из методов")
 
 def main():
-    # переменные окружения
-    SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-    GOOGLE_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-
-    if not SPREADSHEET_ID or not GOOGLE_JSON:
-        raise RuntimeError("Не заданы переменные SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON")
-
-    print("Собираем все подсети через Selenium + виртуальный скролл…")
     subs = fetch_all_subnets()
-    print(f"Найдено подсетей: {len(subs)}")
-
-    print(f"Пишем в Google Sheets (‘taostats stats’)…")
-    write_to_sheet(subs, SPREADSHEET_ID, GOOGLE_JSON)
-    print("✅ Готово.")
+    write_to_sheets(subs)
+    print("Готово.")
 
 if __name__ == "__main__":
     main()
