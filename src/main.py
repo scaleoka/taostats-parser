@@ -1,100 +1,83 @@
 #!/usr/bin/env python3
 import os
-import time
+import re
 import json
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import requests
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# --- Конфиг ---
-URL         = "https://taostats.io/subnets"
-SHEET_NAME  = "taostats stats"
+# ——— Конфиг из окружения ———
 SPREADSHEET_ID       = os.getenv("SPREADSHEET_ID")
-GOOGLE_JSON         = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SERVICE_JSON  = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+SHEET_NAME           = "taostats stats"
 
-if not SPREADSHEET_ID or not GOOGLE_JSON:
-    raise RuntimeError("Не заданы SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON")
+if not SPREADSHEET_ID or not GOOGLE_SERVICE_JSON:
+    raise RuntimeError("Не заданы SECRETS SPREADSHEET_ID и GOOGLE_SERVICE_ACCOUNT_JSON")
 
-# --- Google Sheets setup ---
-creds_info = json.loads(GOOGLE_JSON)
-creds = service_account.Credentials.from_service_account_info(
-    creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-)
-service = build("sheets", "v4", credentials=creds).spreadsheets()
-
+# ——— Получение всех подсетей через RSC XHR ———
 def fetch_all_subnets():
-    options = uc.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    driver = uc.Chrome(options=options)
-    driver.get(URL)
+    url = "https://taostats.io/subnets"
+    payload = {"page": 1, "limit": -1, "order": "market_cap_desc"}
+    headers = {
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Accept":       "text/x-component",
+        # и те же куки/User-Agent, что в браузере, если нужно
+    }
 
-    wait = WebDriverWait(driver, 20)
-    # ждём, пока виртуальный скроллер и хотя бы одна строка появятся
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[role='row'][data-rowindex]")))
-    scroller = driver.find_element(By.CSS_SELECTOR, ".MuiDataGrid-virtualScroller")
+    resp = requests.post(url, data=json.dumps(payload), headers=headers, timeout=30)
+    resp.raise_for_status()
+    text = resp.text
 
-    prev = 0
-    while True:
-        rows = driver.find_elements(By.CSS_SELECTOR, "div[role='row'][data-rowindex]")
-        if len(rows) == prev:
-            break
-        prev = len(rows)
-        # долистываем до конца контейнера
-        driver.execute_script("arguments[0].scrollTo(0, arguments[0].scrollHeight);", scroller)
-        time.sleep(1)  # даём виртуальному скроллеру подгрузить новые
+    # выдергиваем подмассив subnets из RSC-стрима
+    m = re.search(r'"subnets"\s*:\s*(\[\s*\{.*?\}\s*\])', text, re.S)
+    if not m:
+        raise RuntimeError("Не удалось найти subnets в RSC-ответе")
+    return json.loads(m.group(1))
 
-    # парсим все найденные строки
-    data = []
-    for row in rows:
-        cells = row.find_elements(By.CSS_SELECTOR, "div[role='cell']")
-        if len(cells) < 9:
-            continue
-        rec = {
-            "netuid":            cells[0].text.strip(),
-            "name":              cells[1].text.strip(),
-            "registration_date": cells[2].text.strip(),
-            "price":             cells[3].text.strip(),
-            "emission":          cells[4].text.strip(),
-            "registration_cost": cells[5].text.strip(),
-            "vtrust":            cells[6].text.strip(),
-            "key":               cells[8].text.strip(),
-        }
-        # 7-я ячейка — иконки ссылок
-        github = discord = None
-        for a in cells[7].find_elements(By.TAG_NAME, "a"):
-            href = a.get_attribute("href")
-            if "github.com" in href:
-                github = href
-            elif "discord" in href:
-                discord = href
-        rec["github"] = github
-        rec["discord"] = discord
+# ——— Трансформация полей под лист ———
+def transform(s):
+    return {
+        "netuid":            s.get("netuid"),
+        "name":              s.get("name") or s.get("subnet_name"),
+        "registration_date": s.get("registration_timestamp") or s.get("timestamp"),
+        "price":             s.get("price"),
+        "emission":          s.get("emission"),
+        "registration_cost": s.get("registration_cost") or s.get("neuron_registration_cost"),
+        "github":            s.get("github") or s.get("github_repo"),
+        "discord":           s.get("discord") or s.get("discord_url"),
+        "key":               s.get("key") or s.get("subnet_url"),
+        "vtrust":            s.get("vTrust") or s.get("vtrust"),
+    }
 
-        data.append(rec)
-
-    driver.quit()
-    return data
-
+# ——— Запись в Google Sheets ———
 def save_to_sheets(rows):
+    creds_info = json.loads(GOOGLE_SERVICE_JSON)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    service = build("sheets", "v4", credentials=creds).spreadsheets()
+
     headers = list(rows[0].keys())
-    values  = [headers] + [[r[h] or "" for h in headers] for r in rows]
+    values  = [headers] + [[r[h] for h in headers] for r in rows]
+
     service.values().update(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{SHEET_NAME}'!A1",
         valueInputOption="RAW",
         body={"values": values}
     ).execute()
-    print(f"✅ Всего записано {len(rows)} подсетей в лист '{SHEET_NAME}'")
+    print(f"✅ Записано {len(rows)} подсетей в лист '{SHEET_NAME}'")
 
+# ——— Главный блок ———
 if __name__ == "__main__":
-    print("Собираем все подсети через виртуальный скроллер DataGrid…")
-    subs = fetch_all_subnets()
-    print(f"→ Найдено подсетей: {len(subs)}")
-    print("Записываем в Google Sheets…")
-    save_to_sheets(subs)
+    print("1) Получаем все подсети через RSC-XHR…")
+    raw = fetch_all_subnets()
+    print(f"→ Всего подсетей: {len(raw)}")
+
+    print("2) Трансформируем данные…")
+    rows = [transform(s) for s in raw]
+
+    print("3) Записываем в Google Sheets…")
+    save_to_sheets(rows)
     print("Готово.")
