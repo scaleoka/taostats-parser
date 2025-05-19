@@ -1,83 +1,103 @@
 #!/usr/bin/env python3
+# src/main.py
+
 import os
 import json
 from playwright.sync_api import sync_playwright
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
+# URL страницы с подсетями
 URL = "https://taostats.io/subnets"
-# Ожидаем две переменные окружения:
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
-SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 
+# Ожидаемые переменные окружения
+SPREADSHEET_ID        = os.environ.get("SPREADSHEET_ID")
+SERVICE_ACCOUNT_JSON  = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+SHEET_NAME            = "taostats stats"
 
-def fetch_subnets():
+if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
+    raise RuntimeError(
+        "Не заданы обязательные переменные окружения: "
+        "SPREADSHEET_ID и GOOGLE_SERVICE_ACCOUNT_JSON"
+    )
+
+def fetch_subnets() -> list[dict]:
     """
-    Открываем страницу через Playwright, ждём загрузки грида и парсим все строки.
-    Возвращаем список dict с полями name, netuid, price.
+    Открывает страницу Playwright, ждёт появления строк грида и парсит их.
     """
     subs = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.goto(URL, wait_until="networkidle")
-        # Ждём, пока появятся ряды таблицы
-        page.wait_for_selector("div[role='row'][data-rowindex]")
-        rows = page.query_selector_all("div[role='row'][data-rowindex]")
+        # ждём только DOMContentLoaded, не networkidle
+        page.goto(URL, timeout=60_000, wait_until="domcontentloaded")
+        # затем ждём конкретно появления строк таблицы
+        page.wait_for_selector(
+            'div[role="row"][data-rowindex]',
+            timeout=60_000
+        )
+
+        rows = page.query_selector_all('div[role="row"][data-rowindex]')
         for row in rows:
-            cells = row.query_selector_all("div[role='cell']")
-            if len(cells) < 4:
+            cells = row.query_selector_all('div[role="cell"]')
+            if len(cells) < 10:
                 continue
-            name = cells[1].inner_text().strip()
-            netuid = cells[2].inner_text().strip()
-            price = cells[3].inner_text().strip()
-            subs.append({"name": name, "netuid": netuid, "price": price})
+            subs.append({
+                "netuid":            cells[0].inner_text().strip(),
+                "name":              cells[1].inner_text().strip(),
+                "registration_date": cells[2].inner_text().strip(),
+                "price":             cells[3].inner_text().strip(),
+                "emission":          cells[4].inner_text().strip(),
+                "registration_cost": cells[5].inner_text().strip(),
+                "github":            cells[6].inner_text().strip(),
+                "discord":           cells[7].inner_text().strip(),
+                "key":               cells[8].inner_text().strip(),
+                "vtrust":            cells[9].inner_text().strip(),
+            })
         browser.close()
     return subs
 
-
-def write_to_sheets(subs):
+def write_to_sheets(subnets: list[dict]):
     """
-    Очищаем диапазон A2:C на листе 'taostats stats' и пишем туда
-    name / netuid / price.
+    Очищает диапазон A1:J и пишет данные из subnets
+    в лист SHEET_NAME Google Sheets.
     """
-    if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
-        raise RuntimeError(
-            "Missing SPREADSHEET_ID or GOOGLE_SERVICE_ACCOUNT_JSON environment variables"
-        )
     creds_info = json.loads(SERVICE_ACCOUNT_JSON)
     creds = Credentials.from_service_account_info(
-        creds_info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        creds_info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
-    service = build("sheets", "v4", credentials=creds)
-    sheet = service.spreadsheets()
+    service = build("sheets", "v4", credentials=creds).spreadsheets()
 
-    # Очистка старых данных
-    sheet.values().clear(
+    headers = ["netuid", "name", "registration_date", "price", "emission",
+               "registration_cost", "github", "discord", "key", "vtrust"]
+    values = [headers] + [[s[h] for h in headers] for s in subnets]
+
+    # Очищаем старые данные
+    service.values().clear(
         spreadsheetId=SPREADSHEET_ID,
-        range="taostats stats!A2:C"
+        range=f"'{SHEET_NAME}'!A1:J"
     ).execute()
 
-    # Формируем новый массив значений
-    values = [[s["name"], s["netuid"], s["price"]] for s in subs]
-    body = {"values": values}
-
-    # Пишем в таблицу
-    sheet.values().append(
+    # Пишем новые
+    service.values().update(
         spreadsheetId=SPREADSHEET_ID,
-        range="taostats stats!A2:C",
+        range=f"'{SHEET_NAME}'!A1",
         valueInputOption="RAW",
-        body=body
+        body={"values": values}
     ).execute()
 
-    print(f"✅ Written {len(subs)} rows to 'taostats stats'")
-
+    print(f"✅ Записано {len(subnets)} подсетей в лист '{SHEET_NAME}'")
 
 def main():
+    print("1) Собираем подсети через Playwright…")
     subs = fetch_subnets()
-    print(f"Found {len(subs)} subnets")
+    print(f"→ Найдено подсетей: {len(subs)}")
+
+    print("2) Пишем в Google Sheets…")
     write_to_sheets(subs)
 
+    print("Готово.")
 
 if __name__ == "__main__":
     main()
