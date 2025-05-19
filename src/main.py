@@ -25,8 +25,11 @@ def fetch_via_rsc() -> list[dict]:
     body = {"page": 1, "limit": -1, "order": "market_cap_desc"}
     headers = {"Accept": "text/x-component"}
     resp = requests.post(URL, json=body, headers=headers, timeout=30)
-    resp.raise_for_status()
-    text = resp.text
+
+    # ——— ДЕБАГ: сохраняем полный ответ в файл и прерываем скрипт ———
+    with open("debug_subnets_response.txt", "w", encoding="utf-8") as f:
+        f.write(resp.text)
+    raise RuntimeError("Сохранили debug_subnets_response.txt — загрузишь его сюда?")
 
     # Найти самый большой JSON-массив в ответе
     match = re.search(r"(\[\s*\{[\s\S]*\}\s*\])", text)
