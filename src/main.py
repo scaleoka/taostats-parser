@@ -1,68 +1,95 @@
 #!/usr/bin/env python3
-import csv
-import sys
-import time
-from playwright.sync_api import sync_playwright
+import os
+import re
+import json
+import cloudscraper
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
-URL = "https://taostats.io/subnets"
+# ——— Конфиг из окружения ———
+URL                  = "https://taostats.io/subnets"
+SHEET_NAME           = "taostats stats"
+SPREADSHEET_ID       = os.getenv("SPREADSHEET_ID")
+GOOGLE_SERVICE_JSON  = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-def fetch_all_subnets() -> list[dict]:
-    """Launch a headless Chromium, navigate to the subnets page,
-    scroll the grid to load all rows, then scrape headers + cell text."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(URL, timeout=60_000)
+if not SPREADSHEET_ID or not GOOGLE_SERVICE_JSON:
+    raise RuntimeError("Не заданы переменные SPREADSHEET_ID или GOOGLE_SERVICE_ACCOUNT_JSON")
 
-        # wait for the data grid to appear
-        page.wait_for_selector('div[role="row"][data-rowindex]', timeout=30_000)
+def fetch_page_html() -> str:
+    """Скачиваем HTML страницы /subnets."""
+    scraper = cloudscraper.create_scraper()
+    resp = scraper.get(URL, timeout=30)
+    resp.raise_for_status()
+    return resp.text
 
-        # scroll down until no new rows appear
-        prev_count = -1
-        while True:
-            rows = page.query_selector_all('div[role="row"][data-rowindex]')
-            if len(rows) == prev_count:
-                break
-            prev_count = len(rows)
-            # scroll to bottom
-            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-            time.sleep(1)  # give the grid time to fetch/render
+def parse_initial_data(html: str) -> list[dict]:
+    """
+    Ищем в HTML массив initialData:
+      "initialData": [ {…}, {…}, … ]
+    и возвращаем его как list[dict].
+    """
+    m = re.search(
+        r'"initialData"\s*:\s*(\[\s*\{.*?\}\s*\])',
+        html,
+        re.DOTALL
+    )
+    if not m:
+        # для отладки:
+        with open("debug_subnets.html", "w", encoding="utf-8") as f:
+            f.write(html)
+        raise RuntimeError("Не удалось найти initialData в HTML (смотрите debug_subnets.html)")
+    return json.loads(m.group(1))
 
-        # grab column headers
-        header_elems = page.query_selector_all('div[role="columnheader"]')
-        headers = [h.inner_text().strip() for h in header_elems]
+def transform(sub: dict) -> dict:
+    """Приводим поля к нужным колонкам."""
+    return {
+        "netuid":            sub.get("netuid"),
+        "name":              sub.get("subnet_name") or sub.get("name"),
+        "registration_date": sub.get("registration_timestamp") or sub.get("timestamp"),
+        "price":             sub.get("price"),
+        "emission":          sub.get("emission"),
+        "registration_cost": sub.get("neuron_registration_cost") or sub.get("registration_cost"),
+        "github":            sub.get("github_repo") or sub.get("github"),
+        "discord":           sub.get("discord_url") or sub.get("discord"),
+        "key":               sub.get("subnet_url") or sub.get("key"),
+        "vtrust":            sub.get("vTrust") or sub.get("vtrust"),
+    }
 
-        # collect every row
-        data = []
-        for row in rows:
-            cells = row.query_selector_all('div[role="cell"]')
-            texts = [c.inner_text().strip() for c in cells]
-            # zip into a dict, skip rows that don't match header count
-            if len(texts) == len(headers):
-                data.append(dict(zip(headers, texts)))
+def save_to_sheets(rows: list[dict]):
+    """Заливаем готовые строки в Google Sheets."""
+    creds_info = json.loads(GOOGLE_SERVICE_JSON)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    service = build("sheets", "v4", credentials=creds).spreadsheets()
 
-        browser.close()
-        return data
+    headers = list(rows[0].keys())
+    values  = [headers] + [[r.get(h, "") for h in headers] for r in rows]
+
+    service.values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"'{SHEET_NAME}'!A1",
+        valueInputOption="RAW",
+        body={"values": values}
+    ).execute()
+    print(f"✅ Всего записано {len(rows)} подсетей в лист '{SHEET_NAME}'")
 
 def main():
-    try:
-        subs = fetch_all_subnets()
-    except Exception as e:
-        print("❌ Failed to fetch subnets:", e, file=sys.stderr)
-        sys.exit(1)
+    print("1) Скачиваем HTML…")
+    html = fetch_page_html()
 
-    if not subs:
-        print("⚠️ No subnets found.", file=sys.stderr)
-        sys.exit(1)
+    print("2) Извлекаем initialData…")
+    subs = parse_initial_data(html)
+    print(f"→ Найдено подсетей: {len(subs)}")
 
-    # write out a CSV; replace this with your Google Sheets code as needed
-    out_file = "subnets.csv"
-    with open(out_file, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=subs[0].keys())
-        writer.writeheader()
-        writer.writerows(subs)
+    print("3) Трансформируем записи…")
+    rows = [transform(s) for s in subs]
 
-    print(f"✅ Wrote {len(subs)} rows to {out_file}")
+    print("4) Записываем в Google Sheets…")
+    save_to_sheets(rows)
+
+    print("Готово.")
 
 if __name__ == "__main__":
     main()
