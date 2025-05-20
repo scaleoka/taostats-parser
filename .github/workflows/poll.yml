@@ -9,6 +9,7 @@ jobs:
     env:
       SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
