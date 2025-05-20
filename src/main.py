@@ -1,52 +1,39 @@
 import re
-import json
 import requests
+from urllib.parse import urljoin
 
 URL = "https://taostats.io/subnets"
 
 def fetch_via_rsc() -> list[dict]:
-    print("1) GET /subnets и ищем __NEXT_DATA__…")
-    resp = requests.get(URL, timeout=30)
-    resp.raise_for_status()
-    html = resp.text
+    print("1a) Пытаемся получить subnets через JSON-API…")
 
-    # 1. Извлекаем JSON из <script id="__NEXT_DATA__">
-    m = re.search(
-        r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-        html,
-        re.S
-    )
+    # 1) Скачиваем HTML
+    html = requests.get(URL, timeout=30).text
+
+    # 2) Ищем buildId, который меняется при каждой сборке
+    m = re.search(r'/_next/data/([^/]+)/subnets\.json', html)
     if not m:
-        print("→ Не найден __NEXT_DATA__ в HTML")
+        print("→ Не удалось найти buildId в HTML")
         return []
 
-    try:
-        nd = json.loads(m.group(1))
-    except json.JSONDecodeError:
-        print("→ Не удалось распарсить JSON из __NEXT_DATA__")
-        return []
+    build_id = m.group(1)
+    print(f"→ Найден buildId: {build_id}")
 
-    # 2. Вытаскиваем buildId
-    build_id = nd.get("buildId")
-    if not build_id:
-        print("→ В __NEXT_DATA__ нет ключа buildId")
-        return []
-    print(f"→ Найден buildId = {build_id}")
+    # 3) Формируем URL JSON-файла
+    json_url = urljoin(URL, f"/_next/data/{build_id}/subnets.json")
+    params = {"page": 1, "limit": -1, "order": "market_cap_desc"}
 
-    # 3. Формируем URL data-route и фетчим его
-    data_url = f"https://taostats.io/_next/data/{build_id}/subnets.json"
-    print(f"→ GET {data_url}")
-    jr = requests.get(data_url, timeout=30)
-    jr.raise_for_status()
-    data = jr.json()
+    # 4) Запрашиваем и разбираем JSON
+    resp = requests.get(json_url, params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
 
-    # 4. Достаём список подсетей
-    # Путь может чуть отличаться — подставьте нужный
-    subnets = (
-        data
-        .get("pageProps", {})
-        .get("initialData", {})      # или .get("subnets") напрямик
-        .get("subnets", [])
-    )
-    print(f"→ RSC вернуло подсетей: {len(subnets)}")
-    return subnets
+    # 5) Достаем массив подсетей
+    # В JSON-ответе содержится ключ data.data (тут может слегка отличаться — проверьте структуру)
+    subs = data.get("pageProps", {}) \
+               .get("initialProps", {}) \
+               .get("data", {}) \
+               .get("data", [])
+    print(f"→ JSON-API вернуло подсетей: {len(subs)}")
+
+    return subs
