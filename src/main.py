@@ -1,13 +1,24 @@
 import os
 import json
+from time import sleep
 from bs4 import BeautifulSoup
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from playwright.sync_api import sync_playwright
 
-# Константы
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
 SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 SHEET_NAME = "taostats stats"
+
+def fetch_html():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto('https://taostats.io/subnets', wait_until='networkidle', timeout=120000)
+        sleep(3)
+        html = page.content()
+        browser.close()
+        return html
 
 def parse_subnets(html):
     soup = BeautifulSoup(html, "html.parser")
@@ -52,7 +63,6 @@ def parse_subnets(html):
     return result
 
 def google_sheets_write(data, service_account_json, spreadsheet_id, sheet_name):
-    # Авторизация
     creds = Credentials.from_service_account_info(json.loads(service_account_json))
     service = build('sheets', 'v4', credentials=creds)
     sheet = service.spreadsheets()
@@ -73,13 +83,9 @@ def google_sheets_write(data, service_account_json, spreadsheet_id, sheet_name):
     ).execute()
 
 if __name__ == "__main__":
-    # 1. Парсим HTML
-    with open("html subnets.txt", "r", encoding="utf-8") as f:
-        html = f.read()
+    html = fetch_html()
     data = parse_subnets(html)
 
-    # 2. Пишем в Google Sheets
-    # Добавим шапку
     header = [
         "netuid", "subnet_id", "name", "emission", "price", "1H", "24H", "1W", "1M",
         "market_cap", "vol_24h", "liquidity", "root_prop", "sentiment_val", "sentiment_type"
