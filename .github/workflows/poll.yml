@@ -28,8 +28,5 @@ jobs:
         run: |
           python -m playwright install
 
-      - name: Fetch taostats.io HTML
-        run: python fetch_subnets.py
-
       - name: Run taostats parser
         run: python src/main.py
