@@ -1,66 +1,74 @@
+#!/usr/bin/env python3
+
 import os
-import requests
-from bs4 import BeautifulSoup
 import json
+from bs4 import BeautifulSoup
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-# Секреты из ENV
-SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]
-SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+# 1. Получаем HTML (либо скачиваем, либо читаем сохранённый файл)
+with open("предпросмотр subnets.txt", "r", encoding="utf-8") as f:
+    html = f.read()
+
+soup = BeautifulSoup(html, "html.parser")
+
+# 2. Ищем все строки таблицы
+rows = soup.find_all("div", {"role": "row", "data-rowindex": True})
+
+subnets = []
+for row in rows:
+    cells = row.find_all("div", {"role": "cell"})
+    if len(cells) < 10:
+        continue  # пропуск невалидных строк
+    subnets.append({
+        "netuid": cells[0].get_text(strip=True),
+        "name": cells[1].get_text(strip=True),
+        "registration_date": cells[2].get_text(strip=True),
+        "price": cells[3].get_text(strip=True),
+        "emission": cells[4].get_text(strip=True),
+        "registration_cost": cells[5].get_text(strip=True),
+        "github": cells[6].get_text(strip=True),
+        "discord": cells[7].get_text(strip=True),
+        "key": cells[8].get_text(strip=True),
+        "vtrust": cells[9].get_text(strip=True),
+    })
+
+print(f"Найдено подсетей: {len(subnets)}")
+
+# 3. Запись в Google Sheets
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 SHEET_NAME = "taostats stats"
-URL = 'https://taostats.io/subnets'
 
-# Получаем данные с сайта
-resp = requests.get(URL)
-resp.raise_for_status()
-soup = BeautifulSoup(resp.text, 'html.parser')
+if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
+    raise RuntimeError(
+        "Не заданы переменные окружения: SPREADSHEET_ID и GOOGLE_SERVICE_ACCOUNT_JSON"
+    )
 
-# Найти таблицу - если класс другой, поправь на свой!
-table = soup.find('table')
-if not table:
-    raise RuntimeError('Не найдена таблица!')
-
-# Извлечь заголовки
-headers = [th.get_text(strip=True) for th in table.find('tr').find_all('th')]
-# Подстрой названия под реальные значения!
-header_map = {h.lower(): i for i, h in enumerate(headers)}
-needed = [
-    'netuid', 'name', 'registration date', 'price', 'emission',
-    'registration cost', 'github', 'discord', 'key', 'vtrust'
-]
-needed_map = [header_map[n] for n in needed]
-
-# Собрать данные
-data = []
-for row in table.find_all('tr')[1:]:
-    cols = [td.get_text(strip=True) for td in row.find_all('td')]
-    if len(cols) < len(headers):
-        continue
-    data.append([cols[i] for i in needed_map])
-
-# Подготовить тело для Google Sheets
-values = [needed] + data
-
-# Подключиться к Google Sheets
+creds_info = json.loads(SERVICE_ACCOUNT_JSON)
 creds = Credentials.from_service_account_info(
-    json.loads(SERVICE_ACCOUNT_JSON),
+    creds_info,
     scopes=["https://www.googleapis.com/auth/spreadsheets"]
 )
-service = build('sheets', 'v4', credentials=creds)
-sheet = service.spreadsheets()
+service = build("sheets", "v4", credentials=creds).spreadsheets()
 
-# Очистить и записать в лист
-sheet.values().clear(
+headers = [
+    "netuid", "name", "registration_date", "price", "emission",
+    "registration_cost", "github", "discord", "key", "vtrust"
+]
+values = [headers] + [[s[h] for h in headers] for s in subnets]
+
+# Очищаем диапазон
+service.values().clear(
     spreadsheetId=SPREADSHEET_ID,
     range=f"'{SHEET_NAME}'!A1:J"
 ).execute()
-
-sheet.values().update(
+# Пишем новые данные
+service.values().update(
     spreadsheetId=SPREADSHEET_ID,
     range=f"'{SHEET_NAME}'!A1",
     valueInputOption="RAW",
-    body={'values': values}
+    body={"values": values}
 ).execute()
 
-print(f"✅ Данные успешно записаны в Google Sheet '{SHEET_NAME}' ({len(data)} строк)")
+print(f"✅ Записано {len(subnets)} подсетей в лист '{SHEET_NAME}'")
