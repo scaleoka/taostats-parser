@@ -3,12 +3,10 @@
 
 import os
 import json
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-# --- Настройки ---
 URL = "https://taostats.io/subnets"
 SHEET_NAME = "taostats stats"
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
@@ -17,48 +15,35 @@ SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
     raise RuntimeError("Не заданы обязательные переменные окружения: SPREADSHEET_ID и GOOGLE_SERVICE_ACCOUNT_JSON")
 
-def fetch_html():
-    print("Скачиваем страницу…")
-    resp = requests.get(URL)
-    resp.raise_for_status()
-    return resp.text
-
-def parse_subnets(html):
-    print("Парсим данные из HTML…")
-    soup = BeautifulSoup(html, "html.parser")
-
-    # Поиск таблицы по CSS-селектору
-    table = soup.find("table")
-    if not table:
-        raise RuntimeError("Не найдена таблица с подсетями!")
-
-    # Заголовки столбцов
-    headers = []
-    for th in table.find_all("th"):
-        headers.append(th.text.strip().lower().replace(" ", "_"))
-
-    # Получаем строки
-    subnets = []
-    for tr in table.find_all("tr")[1:]:  # пропускаем header
-        tds = tr.find_all("td")
-        if len(tds) < 10:
-            continue
-        # Сбор данных по нужным столбцам
-        subnet = {
-            "netuid":            tds[0].text.strip(),
-            "name":              tds[1].text.strip(),
-            "registration_date": tds[2].text.strip(),
-            "price":             tds[3].text.strip(),
-            "emission":          tds[4].text.strip(),
-            "registration_cost": tds[5].text.strip(),
-            "github":            tds[6].text.strip(),
-            "discord":           tds[7].text.strip(),
-            "key":               tds[8].text.strip(),
-            "vtrust":            tds[9].text.strip(),
-        }
-        subnets.append(subnet)
-    print(f"Найдено подсетей: {len(subnets)}")
-    return subnets
+def fetch_subnets():
+    print("Запускаем headless-браузер и ждём таблицу…")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(URL, wait_until="networkidle", timeout=90000)
+        page.wait_for_selector('div[role="row"][data-rowindex]', timeout=60000)
+        rows = page.query_selector_all('div[role="row"][data-rowindex]')
+        subnets = []
+        for row in rows:
+            cells = row.query_selector_all('div[role="cell"]')
+            # Смотрим — все ли нужные столбцы на месте
+            if len(cells) < 10:
+                continue
+            subnets.append({
+                "netuid":            cells[0].inner_text().strip(),
+                "name":              cells[1].inner_text().strip(),
+                "registration_date": cells[2].inner_text().strip(),
+                "price":             cells[3].inner_text().strip(),
+                "emission":          cells[4].inner_text().strip(),
+                "registration_cost": cells[5].inner_text().strip(),
+                "github":            cells[6].inner_text().strip(),
+                "discord":           cells[7].inner_text().strip(),
+                "key":               cells[8].inner_text().strip(),
+                "vtrust":            cells[9].inner_text().strip(),
+            })
+        browser.close()
+        print(f"Найдено подсетей: {len(subnets)}")
+        return subnets
 
 def write_to_sheets(subnets):
     print("Записываем в Google Sheets…")
@@ -73,13 +58,11 @@ def write_to_sheets(subnets):
                "registration_cost", "github", "discord", "key", "vtrust"]
     values = [headers] + [[subnet.get(h, "-") for h in headers] for subnet in subnets]
 
-    # Очищаем старое содержимое
     service.values().clear(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{SHEET_NAME}'!A1:J"
     ).execute()
 
-    # Записываем новые данные
     service.values().update(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{SHEET_NAME}'!A1",
@@ -89,8 +72,7 @@ def write_to_sheets(subnets):
     print(f"✅ Записано {len(subnets)} подсетей в лист '{SHEET_NAME}'")
 
 def main():
-    html = fetch_html()
-    subnets = parse_subnets(html)
+    subnets = fetch_subnets()
     write_to_sheets(subnets)
     print("Готово.")
 
