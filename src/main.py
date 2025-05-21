@@ -7,7 +7,7 @@ from googleapiclient.discovery import build
 
 # Секреты из ENV
 SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]
-SERVICE_ACCOUNT_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
+SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 SHEET_NAME = "taostats stats"
 URL = 'https://taostats.io/subnets'
 
