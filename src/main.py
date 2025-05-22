@@ -15,8 +15,9 @@ def fetch_html_playwright(url):
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.goto(url, wait_until="load", timeout=180000)
-        page.wait_for_selector('table#taostats-table', timeout=60000)
-        sleep(2)  # чуть подождать
+        # Жмём кнопку "ALL"
+        page.click('button:text("ALL")')
+        sleep(3)  # ждём полной подгрузки
         html = page.content()
         browser.close()
         return html
