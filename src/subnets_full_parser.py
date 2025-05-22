@@ -32,35 +32,37 @@ def get_max_subnets(html):
     return int(match.group(1))
 
 def clean_concat_texts(elements):
-    # Склеивает тексты без пробела между ними
     return ''.join([el.get_text(strip=True) for el in elements])
+
+def clean_bittensor(text):
+    # Убирает "Bittensor" и пробелы
+    return text.replace("Bittensor", "").strip()
+
+def clean_emission(text):
+    # Убираем только ПЕРВЫЙ символ %
+    return text.replace("%", "", 1).strip()
 
 def parse_metagraph(html):
     soup = BeautifulSoup(html, "html.parser")
-    # subnet_id (Netuid)
     netuid = ""
     netuid_block = soup.find("p", string="Netuid:")
     if netuid_block:
         netuid_val = netuid_block.find_next_sibling("p")
         netuid = netuid_val.get_text(strip=True) if netuid_val else ""
-    # subnet_name
     subnet_name = ""
     title = soup.find("p", class_=re.compile(r"font-bold.*text-2xl"))
     if title:
         subnet_name = title.get_text(strip=True)
-    # reg date
     reg_date = ""
     reg_p = soup.find("p", string="Reg:")
     if reg_p:
         reg_val = reg_p.find_next_sibling("p")
         reg_date = reg_val.get_text(strip=True) if reg_val else ""
-    # net key
     net_key = ""
     netkey_block = soup.find("a", href=re.compile(r"^/account/"))
     if netkey_block:
         netkey_span = netkey_block.find("span")
         net_key = netkey_span.get_text(strip=True) if netkey_span else ""
-    # emission
     emission = ""
     emissions_label = soup.find("p", string=re.compile(r"Emissions"))
     if emissions_label:
@@ -70,14 +72,14 @@ def parse_metagraph(html):
             if vals:
                 all_ps = vals.find_all("p")
                 emission = clean_concat_texts(all_ps)
-    # price
+                emission = clean_emission(emission)
     price = ""
     price_block = soup.find("p", class_=re.compile(r"!text-\[#00DBBC\]"))
     if price_block:
         price_row = price_block.parent
         ps = price_row.find_all("p")
         price = clean_concat_texts(ps)
-    # reg cost
+        price = clean_bittensor(price)
     reg_cost = ""
     reg_cost_label = soup.find("p", string=re.compile(r"Reg Cost"))
     if reg_cost_label:
@@ -87,12 +89,11 @@ def parse_metagraph(html):
             if vals:
                 all_ps = vals.find_all("p")
                 reg_cost = clean_concat_texts(all_ps)
-    # discord link
+                reg_cost = clean_bittensor(reg_cost)
     discord = ""
     discord_img = soup.find("img", src="/images/logo/discord.svg")
     if discord_img and discord_img.parent.name == "a":
         discord = discord_img.parent.get("href", "")
-    # github link
     github = ""
     github_img = soup.find("img", src="/images/logo/github.svg")
     if github_img and github_img.parent.name == "a":
@@ -103,12 +104,10 @@ def google_sheets_write(data, service_account_json, spreadsheet_id, sheet_name):
     creds = Credentials.from_service_account_info(json.loads(service_account_json))
     service = build('sheets', 'v4', credentials=creds)
     sheet = service.spreadsheets()
-    # Очищаем старые данные (кроме заголовков)
     sheet.values().clear(
         spreadsheetId=spreadsheet_id,
         range=f"{sheet_name}!A2:Z"
     ).execute()
-    # Пишем новые данные
     body = {"values": data}
     sheet.values().append(
         spreadsheetId=spreadsheet_id,
