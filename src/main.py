@@ -71,7 +71,7 @@ def google_sheets_write(data, service_account_json, spreadsheet_id, sheet_name):
     sheet = service.spreadsheets()
     sheet.values().clear(
         spreadsheetId=spreadsheet_id,
-        range=f"{sheet_name}!A2:Z"
+        range=f"{sheet_name}!A1:Z"
     ).execute()
     body = {"values": data}
     sheet.values().append(
