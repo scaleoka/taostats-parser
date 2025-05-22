@@ -1,66 +1,61 @@
 import os
-import json
-from time import sleep
+import requests
 from bs4 import BeautifulSoup
+import json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from playwright.sync_api import sync_playwright
 
+# Google Sheets параметры
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
 SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 SHEET_NAME = "taostats stats"
 
-def fetch_html():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto('https://taostats.io/subnets', wait_until='networkidle', timeout=120000)
-        sleep(3)
-        html = page.content()
-        browser.close()
-        return html
+def fetch_html(url):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.text
 
-def parse_subnets(html):
+def parse_table(html):
     soup = BeautifulSoup(html, "html.parser")
-    tbody = soup.find("tbody", class_="space-y-1")
-    if not tbody:
-        raise RuntimeError("Тело таблицы (tbody) не найдено!")
-    rows = tbody.find_all("tr", class_="overflow-hidden")
-    result = []
+    table = soup.find("table", {"id": "taostats-table"})
+    if not table:
+        raise RuntimeError("Не найдена таблица с id='taostats-table'")
+    rows = table.find("tbody").find_all("tr")
+    data = []
     for row in rows:
-        tds = row.find_all("td")
-        if len(tds) < 14:
-            continue
-        netuid = tds[0].get_text(strip=True)
-        subnet_cell = tds[1]
-        name = subnet_cell.find("p", class_="font-normal text-foreground font-everett text-sm truncate group-hover:underline")
-        name = name.get_text(strip=True) if name else ""
-        id_span = subnet_cell.find("p", class_="font-normal font-everett text-sm text-[#949494]")
-        subnet_id = id_span.get_text(strip=True) if id_span else ""
-        emission = tds[2].get_text(strip=True)
-        price = tds[3].get_text(strip=True)
-        h1 = tds[4].get_text(strip=True)
-        h24 = tds[5].get_text(strip=True)
-        w1 = tds[6].get_text(strip=True)
-        m1 = tds[7].get_text(strip=True)
-        market_cap = tds[8].get_text(strip=True)
-        vol_24h = tds[9].get_text(strip=True)
-        liquidity = tds[10].get_text(strip=True)
-        root_prop = tds[11].get_text(strip=True)
-        sentiment_cell = tds[13]
-        sentiment_val = ""
-        sentiment_type = ""
-        sentiment_p = sentiment_cell.find("p", class_="text-foreground font-everett text-xs font-medium leading-4")
-        if sentiment_p:
-            sentiment_val = sentiment_p.get_text(strip=True)
-        sentiment_type_p = sentiment_cell.find("p", class_="font-everett text-xs mt-2 w-fit font-medium leading-[13px] text-[#B3B3B3]")
-        if sentiment_type_p:
-            sentiment_type = sentiment_type_p.get_text(strip=True)
-        result.append([
-            netuid, subnet_id, name, emission, price, h1, h24, w1, m1,
-            market_cap, vol_24h, liquidity, root_prop, sentiment_val, sentiment_type
-        ])
-    return result
+        cols = row.find_all("td")
+        if len(cols) < 14:
+            continue  # Пропускаем невалидные строки
+        # Название и ID в одном TD
+        subnet_name = subnet_id = ""
+        p_tags = cols[1].find_all("p")
+        if len(p_tags) >= 2:
+            subnet_name = p_tags[0].get_text(strip=True)
+            subnet_id = p_tags[1].get_text(strip=True)
+        else:
+            subnet_name = cols[1].get_text(strip=True)
+        row_data = [
+            cols[0].get_text(strip=True),  # порядковый номер
+            subnet_id,
+            subnet_name,
+            cols[2].get_text(strip=True),  # emission
+            cols[3].get_text(strip=True),  # price
+            cols[4].get_text(strip=True),  # 1H
+            cols[5].get_text(strip=True),  # 24H
+            cols[6].get_text(strip=True),  # 1W
+            cols[7].get_text(strip=True),  # 1M
+            cols[8].get_text(strip=True),  # market cap
+            cols[9].get_text(strip=True),  # vol 24h
+            cols[10].get_text(strip=True), # liquidity
+            cols[11].get_text(strip=True), # root prop
+            cols[12].get_text(strip=True), # last 7d
+            cols[13].get_text(strip=True), # sentiment
+        ]
+        data.append(row_data)
+    return data
 
 def google_sheets_write(data, service_account_json, spreadsheet_id, sheet_name):
     creds = Credentials.from_service_account_info(json.loads(service_account_json))
@@ -83,12 +78,13 @@ def google_sheets_write(data, service_account_json, spreadsheet_id, sheet_name):
     ).execute()
 
 if __name__ == "__main__":
-    html = fetch_html()
-    data = parse_subnets(html)
+    url = "https://taostats.io/subnets"
+    html = fetch_html(url)
+    data = parse_table(html)
 
     header = [
-        "netuid", "subnet_id", "name", "emission", "price", "1H", "24H", "1W", "1M",
-        "market_cap", "vol_24h", "liquidity", "root_prop", "sentiment_val", "sentiment_type"
+        "№", "subnet_id", "subnet_name", "emission", "price", "1H", "24H", "1W", "1M",
+        "market_cap", "vol_24h", "liquidity", "root_prop", "last_7d", "sentiment"
     ]
     all_data = [header] + data
     google_sheets_write(all_data, SERVICE_ACCOUNT_JSON, SPREADSHEET_ID, SHEET_NAME)
