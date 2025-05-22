@@ -35,11 +35,9 @@ def clean_concat_texts(elements):
     return ''.join([el.get_text(strip=True) for el in elements])
 
 def clean_bittensor(text):
-    # Убирает "Bittensor" и пробелы
     return text.replace("Bittensor", "").strip()
 
 def clean_emission(text):
-    # Убираем только ПЕРВЫЙ символ %
     return text.replace("%", "", 1).strip()
 
 def parse_metagraph(html):
@@ -73,13 +71,17 @@ def parse_metagraph(html):
                 all_ps = vals.find_all("p")
                 emission = clean_concat_texts(all_ps)
                 emission = clean_emission(emission)
+    # --- Только правильный price! ---
     price = ""
-    price_block = soup.find("p", class_=re.compile(r"!text-\[#00DBBC\]"))
-    if price_block:
-        price_row = price_block.parent
-        ps = price_row.find_all("p")
-        price = clean_concat_texts(ps)
-        price = clean_bittensor(price)
+    price_section = soup.find("p", string="Price")
+    if price_section:
+        price_outer = price_section.find_parent("div", class_=re.compile(r"flex-col gap-4"))
+        if price_outer:
+            flexrow = price_outer.find("div", class_=re.compile(r"flex-row items-end"))
+            if flexrow:
+                ps = flexrow.find_all("p", recursive=False)
+                price = ''.join([p.get_text(strip=True) for p in ps])
+                price = clean_bittensor(price)
     reg_cost = ""
     reg_cost_label = soup.find("p", string=re.compile(r"Reg Cost"))
     if reg_cost_label:
