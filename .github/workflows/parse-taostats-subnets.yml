@@ -3,7 +3,7 @@ name: Parse All Taostats Subnets
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 2 * * *'  # Каждый день в 02:00 UTC
+     cron: '0 1 * * *'      # Каждый день в 01:00 UTC
 
 jobs:
   parse:
