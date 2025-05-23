@@ -2,7 +2,9 @@ name: Parse Taostats Subnets List Vtrust Incentive
 
 on:
   workflow_dispatch:
-
+  schedule:
+    - cron: '0 1 * * *'      # Каждый день в 01:00 UTC
+    
 jobs:
   parse:
     runs-on: ubuntu-latest
