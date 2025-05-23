@@ -64,27 +64,26 @@ def parse_metrics(table_html):
     rows = soup.find_all('tr')
     for row in rows:
         tds = row.find_all('td')
-        if not tds or len(tds) < 10:
+        if len(tds) < 9:
             continue
-        # 2-й <td> (Type): ищем иконки
         type_td = tds[1]
         icon_svg = type_td.find('svg')
         if not icon_svg or not icon_svg.has_attr('class'):
             continue
         classes = ' '.join(icon_svg['class']) if isinstance(icon_svg['class'], list) else icon_svg['class']
-        # Shield — vtrust (6-я ячейка, индекс 5)
+        # Щит
         if 'lucide-shield' in classes:
             try:
                 vtrust_val = float(tds[5].get_text(strip=True))
                 vtrust_list.append(vtrust_val)
             except: pass
-        # Pickaxe orange — incentive (9-я ячейка, индекс 8)
+        # Оранжевая кирка
         elif 'lucide-pickaxe' in classes and 'text-[#F90]' in classes:
             try:
                 incentive_val = float(tds[8].get_text(strip=True))
                 inc_orange.append(incentive_val)
             except: pass
-        # Pickaxe green — incentive (9-я ячейка, индекс 8)
+        # Зеленая кирка
         elif 'lucide-pickaxe' in classes and 'text-[#00DBBC]' in classes:
             try:
                 incentive_val = float(tds[8].get_text(strip=True))
