@@ -28,4 +28,4 @@ jobs:
           python -m playwright install
 
       - name: Run metrics parser
-        run: python main.py
+        run: python src/subnets_vtrust_incentive.py
