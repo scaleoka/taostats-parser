@@ -1,4 +1,4 @@
-name: Parse All Taostats Subnets
+name: Parse Taostats Subnets List
 
 on:
   workflow_dispatch:
