@@ -65,8 +65,8 @@ def parse_metagraph(html):
     net_key = ""
     netkey_block = soup.find("a", href=re.compile(r"^/account/"))
     if netkey_block:
-        netkey_span = netkey_block.find("span")
-        net_key = netkey_span.get_text(strip=True) if netkey_span else ""
+        href = netkey_block.get("href", "")
+        net_key = href.replace("/account/", "")
     emission = ""
     emissions_label = soup.find("p", string=re.compile(r"Emissions"))
     if emissions_label:
