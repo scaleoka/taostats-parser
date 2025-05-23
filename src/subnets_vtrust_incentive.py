@@ -43,7 +43,7 @@ def collect_table_html_with_pagination(url):
         while True:
             print(f"  Получаем таблицу (страница {page_num})…")
             soup = BeautifulSoup(page.content(), "html.parser")
-            table = soup.find("table")
+            table = soup.find("table", class_="min-w-full divide-y divide-gray-200")
             if table:
                 all_html += str(table)
             else:
@@ -68,20 +68,18 @@ def parse_metrics(table_html):
     inc_orange = []
     inc_green = []
     soup = BeautifulSoup(table_html, "html.parser")
+    # Только строки с данными (без <th>)
     rows = soup.find_all('tr')
     print(f"    Всего строк <tr>: {len(rows)}")
     for idx, row in enumerate(rows):
         tds = row.find_all('td')
         if len(tds) < 9:
-            print(f"    [{idx}] Пропущена строка: ячеек {len(tds)} (нужно >=9)")
             continue
         type_td = tds[1]
         icon_svg = type_td.find('svg')
         if not icon_svg or not icon_svg.has_attr('class'):
-            print(f"    [{idx}] Нет SVG-иконки во 2-м столбце.")
             continue
         classes = ' '.join(icon_svg['class']) if isinstance(icon_svg['class'], list) else icon_svg['class']
-        print(f"    [{idx}] SVG классы: {classes}")
         # Щит
         if 'lucide-shield' in classes:
             val_raw = tds[5].get_text(strip=True)
@@ -109,8 +107,6 @@ def parse_metrics(table_html):
                 print(f"      [Pickaxe-Green] Incentive={incentive_val}")
             except:
                 print(f"      [Pickaxe-Green] Не удалось преобразовать '{val_raw}' в число")
-        else:
-            print(f"    [{idx}] Неизвестная SVG иконка (классы: {classes})")
     vtrust_avg = round(mean(vtrust_list), 6) if vtrust_list else ""
     inc_orange_max = max(inc_orange) if inc_orange else ""
     inc_orange_min = min(inc_orange) if inc_orange else ""
