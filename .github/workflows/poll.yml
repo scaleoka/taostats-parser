@@ -1,4 +1,4 @@
-name: Parse Taostats Subnets
+name: Parse Taostats Stats List
 
 on:
   workflow_dispatch:         # Запуск вручную
