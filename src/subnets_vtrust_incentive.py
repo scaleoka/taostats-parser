@@ -4,7 +4,7 @@ import json
 from time import sleep
 from statistics import mean
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
@@ -12,14 +12,23 @@ SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
 SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 SHEET_NAME = "taostats subnets"
 
-def fetch_html_playwright(url):
+def fetch_html_playwright(url, netid=None):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.goto(url, wait_until="load", timeout=120000)
-        sleep(2)
+        page.goto(url, wait_until="networkidle", timeout=120_000)
+        try:
+            # Ожидание хотя бы одной строки таблицы с данными (8 сек)
+            page.wait_for_selector("table tr td", timeout=8000)
+        except PlaywrightTimeout:
+            print("    [!] Не дождались появления данных в таблице!")
+        sleep(1.5)  # небольшой запас
         html = page.content()
         browser.close()
+        # DEBUG: сохраняем HTML чтобы убедиться, что есть таблица!
+        if netid is not None:
+            with open(f"subnet_{netid}_debug.html", "w", encoding="utf-8") as f:
+                f.write(html)
         return html
 
 def get_max_subnets(html):
@@ -32,12 +41,16 @@ def get_max_subnets(html):
         raise RuntimeError("Не удалось извлечь число подсетей!")
     return int(match.group(1))
 
-def collect_table_html_with_pagination(url):
+def collect_table_html_with_pagination(url, netid=None):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.goto(url, wait_until="load", timeout=120000)
-        sleep(2)
+        page.goto(url, wait_until="networkidle", timeout=120_000)
+        try:
+            page.wait_for_selector("table tr td", timeout=8000)
+        except PlaywrightTimeout:
+            print("    [!] Не дождались появления данных в таблице!")
+        sleep(1.5)
         all_html = ""
         page_num = 1
         while True:
@@ -48,7 +61,10 @@ def collect_table_html_with_pagination(url):
                 all_html += str(table)
             else:
                 print("    [!] Не найдена <table> на странице!")
-            # Проверяем, можно ли кликнуть NEXT
+            # DEBUG: сохраняем первую страницу таблицы для отладки
+            if netid is not None and page_num == 1:
+                with open(f"subnet_{netid}_table_pg{page_num}.html", "w", encoding="utf-8") as f:
+                    f.write(page.content())
             next_btn = page.query_selector('nav[aria-label="pagination"] >> a[aria-label="Go to next page"]')
             if not next_btn:
                 print("    [!] Кнопка Next не найдена — конец.")
@@ -58,6 +74,10 @@ def collect_table_html_with_pagination(url):
                 print("    [!] Кнопка Next неактивна — конец.")
                 break
             next_btn.click()
+            try:
+                page.wait_for_selector("table tr td", timeout=8000)
+            except PlaywrightTimeout:
+                print("    [!] Не дождались появления данных после Next!")
             page_num += 1
             sleep(1.2)
         browser.close()
@@ -68,7 +88,6 @@ def parse_metrics(table_html):
     inc_orange = []
     inc_green = []
     soup = BeautifulSoup(table_html, "html.parser")
-    # Только строки с данными (без <th>)
     rows = soup.find_all('tr')
     print(f"    Всего строк <tr>: {len(rows)}")
     for idx, row in enumerate(rows):
@@ -139,7 +158,7 @@ if __name__ == "__main__":
         url = f"https://taostats.io/subnets/{netid}/metagraph?order=stake%3Adesc&limit=100"
         print(f"Парсим {url} ...")
         try:
-            table_html = collect_table_html_with_pagination(url)
+            table_html = collect_table_html_with_pagination(url, netid=netid)
             metrics = parse_metrics(table_html)
             result_data.append(metrics)
             print(f"  subnet {netid}: {metrics}")
