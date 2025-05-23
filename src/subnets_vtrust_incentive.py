@@ -38,68 +38,58 @@ def collect_table_html_with_pagination(url):
         page = browser.new_page()
         page.goto(url, wait_until="load", timeout=120000)
         sleep(2)
-        all_rows = []
+        all_html = ""
         while True:
-            # Сбор данных до клика!
             soup = BeautifulSoup(page.content(), "html.parser")
-            table = soup.find("div", {"class": re.compile(r"overflow-x-auto")})
+            table = soup.find("table")
             if table:
-                rows = table.find_all("div", {"class": re.compile(r"table-row")})
-                all_rows.extend(rows)
+                all_html += str(table)
             # Проверяем, можно ли кликнуть NEXT
             next_btn = page.query_selector('nav[aria-label="pagination"] >> a[aria-label="Go to next page"]')
             if not next_btn:
                 break
             next_class = next_btn.get_attribute("class") or ""
-            # Если есть disabled или нет !opacity-100 — считаем кнопку неактивной
             if "disabled" in next_class or "!opacity-100" not in next_class:
                 break
             next_btn.click()
             sleep(1.2)
         browser.close()
-        rows_html = [str(row) for row in all_rows]
-        return rows_html
+        return all_html
 
-def parse_metrics(rows_html):
+def parse_metrics(table_html):
     vtrust_list = []
     inc_orange = []
     inc_green = []
-    for row_html in rows_html:
-        soup = BeautifulSoup(row_html, "html.parser")
-        cells = soup.find_all("div", {"class": re.compile(r"table-cell")})
-        # Поиск по иконке
-        icon_div = soup.find("svg", {"class": re.compile(r"lucide-shield")})
-        if icon_div:
-            idx = [i for i, c in enumerate(cells) if c.find("svg", {"class": re.compile(r"lucide-shield")})]
-            if idx:
-                v_idx = idx[0] + 4
-                if v_idx < len(cells):
-                    try:
-                        val = float(cells[v_idx].get_text(strip=True))
-                        vtrust_list.append(val)
-                    except: pass
-        # Оранжевая кирка
-        icon_pickaxe_orange = soup.find("svg", {"class": re.compile(r"lucide-pickaxe.*text-\\#F90")})
-        if icon_pickaxe_orange:
-            idx = [i for i, c in enumerate(cells) if c.find("svg", {"class": re.compile(r"lucide-pickaxe.*text-\\#F90")})]
-            if idx:
-                inc_idx = idx[0] + 6
-                if inc_idx < len(cells):
-                    try:
-                        val = float(cells[inc_idx].get_text(strip=True))
-                        inc_orange.append(val)
-                    except: pass
-        # Зелёная кирка
-        icon_pickaxe_green = soup.find("svg", {"class": re.compile(r"lucide-pickaxe.*text-\\#00DBBC")})
-        if icon_pickaxe_green:
-            idx = [i for i, c in enumerate(cells) if c.find("svg", {"class": re.compile(r"lucide-pickaxe.*text-\\#00DBBC")})]
-            if idx:
-                inc_idx = idx[0] + 6
-                if inc_idx < len(cells):
-                    try:
-                        val = float(cells[inc_idx].get_text(strip=True))
-                        inc_green.append(val)
-                    except: pass
+    soup = BeautifulSoup(table_html, "html.parser")
+    rows = soup.find_all('tr')
+    for row in rows:
+        tds = row.find_all('td')
+        if not tds or len(tds) < 10:
+            continue
+        # 2-й <td> (Type): ищем иконки
+        type_td = tds[1]
+        icon_svg = type_td.find('svg')
+        if not icon_svg or not icon_svg.has_attr('class'):
+            continue
+        classes = ' '.join(icon_svg['class']) if isinstance(icon_svg['class'], list) else icon_svg['class']
+        # Shield — vtrust (6-я ячейка, индекс 5)
+        if 'lucide-shield' in classes:
+            try:
+                vtrust_val = float(tds[5].get_text(strip=True))
+                vtrust_list.append(vtrust_val)
+            except: pass
+        # Pickaxe orange — incentive (9-я ячейка, индекс 8)
+        elif 'lucide-pickaxe' in classes and 'text-[#F90]' in classes:
+            try:
+                incentive_val = float(tds[8].get_text(strip=True))
+                inc_orange.append(incentive_val)
+            except: pass
+        # Pickaxe green — incentive (9-я ячейка, индекс 8)
+        elif 'lucide-pickaxe' in classes and 'text-[#00DBBC]' in classes:
+            try:
+                incentive_val = float(tds[8].get_text(strip=True))
+                inc_green.append(incentive_val)
+            except: pass
     vtrust_avg = round(mean(vtrust_list), 6) if vtrust_list else ""
     inc_orange_max = max(inc_orange) if inc_orange else ""
     inc_orange_min = min(inc_orange) if inc_orange else ""
@@ -131,8 +121,8 @@ if __name__ == "__main__":
         url = f"https://taostats.io/subnets/{netid}/metagraph?order=stake%3Adesc&limit=100"
         print(f"Парсим {url} ...")
         try:
-            rows_html = collect_table_html_with_pagination(url)
-            metrics = parse_metrics(rows_html)
+            table_html = collect_table_html_with_pagination(url)
+            metrics = parse_metrics(table_html)
             result_data.append(metrics)
             print(f"  subnet {netid}: {metrics}")
         except Exception as e:
