@@ -40,6 +40,12 @@ def clean_bittensor(text):
 def clean_emission(text):
     return text.replace("%", "", 1).strip()
 
+def clean_price(text):
+    # Убираем Bittensor и ищем первое число вида 0.xxxxxx (ровно 6 знаков после точки)
+    text = text.replace("Bittensor", "")
+    m = re.search(r'(\d+\.\d{6})', text)
+    return m.group(1) if m else ""
+
 def parse_metagraph(html):
     soup = BeautifulSoup(html, "html.parser")
     netuid = ""
@@ -80,8 +86,8 @@ def parse_metagraph(html):
             flexrow = price_outer.find("div", class_=re.compile(r"flex-row items-end"))
             if flexrow:
                 ps = flexrow.find_all("p", recursive=False)
-                price = ''.join([p.get_text(strip=True) for p in ps])
-                price = clean_bittensor(price)
+                price_raw = ''.join([p.get_text(strip=True) for p in ps])
+                price = clean_price(price_raw)
     reg_cost = ""
     reg_cost_label = soup.find("p", string=re.compile(r"Reg Cost"))
     if reg_cost_label:
