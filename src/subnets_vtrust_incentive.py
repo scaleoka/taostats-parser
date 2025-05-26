@@ -43,7 +43,8 @@ def parse_table_for_metrics(table_html):
         svg = tds[1].find("svg")
         if not svg or "class" not in svg.attrs:
             continue
-        svg_class = svg.get("class", [])
+        # Приводим все классы к нижнему регистру для надёжности!
+        svg_class = [c.lower() for c in svg.get("class", [])]
         # VTRUST (щит)
         if "lucide-shield" in svg_class and "text-indigo-400" in svg_class:
             try:
@@ -52,14 +53,14 @@ def parse_table_for_metrics(table_html):
             except Exception:
                 continue
         # INCENTIVE ORANGE
-        if "lucide-pickaxe" in svg_class and "text-[#F90]" in svg_class:
+        if "lucide-pickaxe" in svg_class and "text-[#f90]" in svg_class:
             try:
                 incentive = float(tds[8].get_text(strip=True))
                 incentive_orange.append(incentive)
             except Exception:
                 continue
         # INCENTIVE GREEN
-        if "lucide-pickaxe" in svg_class and "text-[#00DBBC]" in svg_class:
+        if "lucide-pickaxe" in svg_class and "text-[#00dbbc]" in svg_class:
             try:
                 incentive = float(tds[8].get_text(strip=True))
                 incentive_green.append(incentive)
