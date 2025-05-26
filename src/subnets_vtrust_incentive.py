@@ -18,10 +18,10 @@ def fetch_html_playwright(url):
         page = browser.new_page()
         try:
             page.goto(url, wait_until="load", timeout=120_000)
-            # Ждём до 30 сек появления таблицы
             page.wait_for_selector("table#taostats-table", timeout=30_000)
             sleep(2)  # На всякий случай для рендера содержимого
-            table_html = page.query_selector("table#taostats-table").outer_html()
+            table_el = page.query_selector("table#taostats-table")
+            table_html = table_el.evaluate("el => el.outerHTML")
         except PlaywrightTimeoutError:
             print(f"  [!] Не дождались таблицы на {url}")
             table_html = ""
@@ -39,28 +39,26 @@ def parse_table_for_metrics(table_html):
     for tr in rows:
         tds = tr.find_all("td")
         if len(tds) < 9:
-            continue  # мало колонок — пропускаем
-
-        # 2 колонка — иконка: определяем тип (щит/кирка)
+            continue
         svg = tds[1].find("svg")
         if not svg or "class" not in svg.attrs:
             continue
         svg_class = " ".join(svg.get("class"))
-        # --- VTRUST (щит) ---
+        # VTRUST (щит)
         if "lucide-shield" in svg_class and "text-indigo-400" in svg_class:
             try:
                 vtrust = float(tds[5].get_text(strip=True))
                 vtrusts.append(vtrust)
             except Exception:
                 continue
-        # --- INCENTIVE ORANGE ---
+        # INCENTIVE ORANGE
         if "lucide-pickaxe" in svg_class and "text-[#F90]" in svg_class:
             try:
                 incentive = float(tds[8].get_text(strip=True))
                 incentive_orange.append(incentive)
             except Exception:
                 continue
-        # --- INCENTIVE GREEN ---
+        # INCENTIVE GREEN
         if "lucide-pickaxe" in svg_class and "text-[#00DBBC]" in svg_class:
             try:
                 incentive = float(tds[8].get_text(strip=True))
@@ -78,7 +76,6 @@ def google_sheets_write_metrics(data, service_account_json, spreadsheet_id, shee
     creds = Credentials.from_service_account_info(json.loads(service_account_json))
     service = build('sheets', 'v4', credentials=creds)
     sheet = service.spreadsheets()
-    # Пишем в столбцы J: ... (J2 и далее)
     sheet.values().update(
         spreadsheetId=spreadsheet_id,
         range=f"{sheet_name}!J2",
