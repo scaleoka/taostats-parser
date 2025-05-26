@@ -43,7 +43,7 @@ def parse_table_for_metrics(table_html):
         svg = tds[1].find("svg")
         if not svg or "class" not in svg.attrs:
             continue
-        svg_class = " ".join(svg.get("class"))
+        svg_class = svg.get("class", [])
         # VTRUST (щит)
         if "lucide-shield" in svg_class and "text-indigo-400" in svg_class:
             try:
