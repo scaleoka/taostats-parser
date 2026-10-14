@@ -1,38 +1,51 @@
-```markdown
-# Taostats Poller → Google Sheets
+# Taostats Parser
 
-Простой скрипт на Python, который опрашивает RPC-ноду Bittensor и записывает каждый новый блок в Google Sheets.
+Python-парсер HTML-страниц Taostats: список подсетей, метаданные metagraph и
+агрегированные метрики VTrust/Incentive. Старые скрипты собирают страницы через
+Playwright и записывают данные в Google Sheets. Это не RPC-поллер Bittensor.
 
-## Секреты и окружение
+## Статус
 
-Все персональные или чувствительные данные (Spreadsheet ID, JSON сервисного аккаунта, WS_URL, POLL_INTERVAL) должны храниться в системе секретов (GitHub Secrets, Vault и т.п.) и не попадать в репозиторий.
+Проект переводится из рабочего инструмента в публичный портфолио-проект.
+Первый этап добавляет локальные тесты, проверки качества и план архитектуры.
+Новый pipeline, валидация, безопасный экспорт и журнал запусков **ещё не реализованы**.
+Логика трёх Python-скриптов в `src/` сохранена без изменений.
 
-### Переменные окружения (через Secrets)
+## Безопасность
 
-- `WS_URL` — URL WebSocket RPC (по умолчанию: `wss://mainnet-rpc.bittensor.com`)
-- `POLL_INTERVAL` — интервал опроса в секундах (по умолчанию: `5`)
-- `SPREADSHEET_ID` — ID Google Sheets таблицы
-- `GOOGLE_SERVICE_ACCOUNT_JSON` — полный JSON сервисного аккаунта
+- Старые workflow удалены в этой ветке; новый CI выполняет только тесты и Ruff
+  на pull requests, без секретов, Google Sheets и Playwright.
+- До принятия PR старые workflow в `main` могут оставаться активными. Их удаление
+  в ветке не отключает расписания на основной ветке.
+- Не запускайте скрипты в `src/`: безопасная конфигурация ещё не реализована,
+  а экспорт может очищать или перезаписывать диапазоны таблицы.
+- Не используйте ресурсы прежней команды, реальные токены, приватные файлы или
+  старые рабочие таблицы. `.env.example` содержит только будущую конфигурацию;
+  старые скрипты её не читают и используют другие переменные окружения.
+- Credentials и локальные `.env` исключены через `.gitignore`. Это не удаляет
+  уже отслеживаемые файлы и не заменяет проверку diff перед публикацией.
 
-### Установка зависимостей
+## Локальная проверка
+
+Python 3.10+ (CI использует 3.12). Создайте виртуальное окружение и активируйте его:
 
 ```bash
-git clone https://github.com/your-name/taostats-poller.git
-cd taostats-poller
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python -m venv .venv
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+# Linux/macOS: source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m pytest
+python -m ruff check .
+python -m ruff format --check .
 ```
 
-### Локальный запуск
+Существующая установка через `requirements.txt` сохранена, но для тестов она
+не требуется. Не устанавливайте браузеры для unit-тестов.
+HTML-фикстуры полностью синтетические. Тесты извлекают выбранные чистые функции
+из исходников через AST, не импортируя старые модули, Google или Playwright.
+Сетевые соединения и дочерние процессы заблокированы на время тестов.
+Проверяется текущее поведение, включая пустые значения; актуальность селекторов
+для живого сайта этими тестами не подтверждается.
 
-```bash
-export WS_URL="wss://mainnet-rpc.bittensor.com"
-export POLL_INTERVAL=5
-export SPREADSHEET_ID="your_spreadsheet_id"
-export GOOGLE_SERVICE_ACCOUNT_JSON="$(< /path/to/service-account.json)"
-python src/main.py
-```
-```
-
----
+Ruff пока проверяет новые тесты и конфигурацию. Старый `src/` включим в проверки
+при отдельном рефакторинге. План: [docs/architecture.md](docs/architecture.md).
