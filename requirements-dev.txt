@@ -1,0 +1,4 @@
+# Offline tests need no Google or browser dependencies.
+beautifulsoup4>=4.12,<5
+pytest>=8,<9
+ruff>=0.11,<1

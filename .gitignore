@@ -1,0 +1,39 @@
+# Python and virtual environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+# Local configuration and Google credentials
+.env
+.env.*
+!.env.example
+credentials/
+secrets/
+*credentials*.json
+*service_account*.json
+*service-account*.json
+client_secret*.json
+token.json
+# Test output, logs and temporary files
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+junit*.xml
+test-results/
+playwright-report/
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
