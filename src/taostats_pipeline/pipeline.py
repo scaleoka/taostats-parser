@@ -22,11 +22,22 @@ def local_file(root: Path, name: str) -> Path:
     return path
 
 
-def run(input_dir: Path, output: Path | None = None) -> PipelineResult:
+def run(
+    input_dir: Path, output: Path | None = None, *, strict: bool | None = None
+) -> PipelineResult:
     datasets = {"subnets": [], "metadata": [], "validator_metrics": []}
     errors = []
+    selected_strict = strict if strict is not None else False
     try:
         manifest = json.loads((input_dir / "manifest.json").read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("Manifest must be a JSON object")
+        manifest_strict = manifest.get("strict_validation", False)
+        if type(manifest_strict) is not bool:
+            raise ValueError("strict_validation must be a boolean")
+        if strict is not None and type(strict) is not bool:
+            raise ValueError("strict must be a boolean or None")
+        selected_strict = manifest_strict if strict is None else strict
         expected = manifest["expected_ids"]
         if not isinstance(expected, list) or any(type(i) is not int or i < 0 for i in expected):
             raise ValueError("expected_ids must be a list of nonnegative integers")
@@ -57,22 +68,30 @@ def run(input_dir: Path, output: Path | None = None) -> PipelineResult:
                         metric_files = entry["metrics"]
                         if not isinstance(metric_files, list):
                             raise ValueError("metrics must be a list of page filenames")
+                        if "expected_metric_pages" in entry:
+                            count = entry["expected_metric_pages"]
+                            if type(count) is not int or count < 1:
+                                raise ValueError("expected_metric_pages must be a positive integer")
+                            if len(metric_files) != count:
+                                raise ValueError(
+                                    f"Expected {count} metric pages, got {len(metric_files)}"
+                                )
                         record = parse_metrics(
                             [read(name) for name in metric_files], entry["netuid"], timestamp
                         )
                     datasets[category].append(record)
                 except (OSError, ValueError, KeyError, TypeError) as exc:
                     errors.append(f"{category} netuid={entry['netuid']}: {exc}")
-        report = validate(datasets, set(expected))
+        report = validate(datasets, set(expected), strict=selected_strict)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        report = validate(datasets)
+        report = validate(datasets, strict=selected_strict)
         errors.append(f"Input manifest: {exc}")
     report.errors.extend(errors)
     report.status = "error" if report.errors else "ok"
     result = PipelineResult(report)
     if report.status == "ok" and output is not None:
         try:
-            result.generation = export(datasets, output)
+            result.generation = export(datasets, output, strict=selected_strict)
         except (OSError, ValueError, TypeError) as exc:
             report.status = "error"
             report.errors.append(f"Export: {exc}")

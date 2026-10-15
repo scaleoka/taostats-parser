@@ -8,6 +8,16 @@ from decimal import Decimal
 from .models import Metadata, SubnetSnapshot, ValidatorMetrics
 
 SCHEMAS = {"subnets": SubnetSnapshot, "metadata": Metadata, "validator_metrics": ValidatorMetrics}
+REQUIRED_METRICS = {
+    "subnets": ("emission", "price"),
+    "validator_metrics": (
+        "vtrust_avg",
+        "incentive_orange_max",
+        "incentive_orange_min",
+        "incentive_green_max",
+        "incentive_green_min",
+    ),
+}
 
 
 @dataclass
@@ -20,7 +30,9 @@ class ValidationResult:
     unexpected_ids: dict[str, list[int]] = field(default_factory=dict)
 
 
-def validate(datasets: dict, expected_ids: set[int] | None = None) -> ValidationResult:
+def validate(
+    datasets: dict, expected_ids: set[int] | None = None, *, strict: bool = False
+) -> ValidationResult:
     result = ValidationResult()
     coverage = {}
     if expected_ids is not None and any(type(i) is not int or i < 0 for i in expected_ids):
@@ -40,6 +52,13 @@ def validate(datasets: dict, expected_ids: set[int] | None = None) -> Validation
                 result.errors.append(f"{name}[{index}]: invalid netuid")
             else:
                 ids.append(record.netuid)
+            if strict:
+                for name_required in REQUIRED_METRICS.get(name, ()):
+                    if getattr(record, name_required) is None:
+                        result.errors.append(
+                            f"{name}[{index}] netuid={record.netuid}.{name_required}: "
+                            "required metric missing (strict mode)"
+                        )
             try:
                 moment = datetime.fromisoformat(record.collected_at_utc.replace("Z", "+00:00"))
                 if moment.utcoffset() != timedelta(0):

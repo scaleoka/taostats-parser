@@ -31,8 +31,8 @@ def write_dataset(directory: Path, name: str, records: list) -> None:
         handle.write("\n")
 
 
-def export(datasets: dict, output: Path) -> Path:
-    report = validate(datasets)
+def export(datasets: dict, output: Path, *, strict: bool = False) -> Path:
+    report = validate(datasets, strict=strict)
     if report.status != "ok":
         raise ValueError("Export refused: " + "; ".join(report.errors))
     output = Path(output)
@@ -40,7 +40,7 @@ def export(datasets: dict, output: Path) -> Path:
     staging = Path(mkdtemp(prefix=".staging-", dir=output))
     generation = output / f"run-{uuid4().hex}"
     pointer = output / f".current-{uuid4().hex}.tmp"
-    published = False
+    publication_attempted = False
     try:
         for name, records in datasets.items():
             write_dataset(staging, name, records)
@@ -48,12 +48,14 @@ def export(datasets: dict, output: Path) -> Path:
         with pointer.open("w", encoding="utf-8") as handle:
             json.dump({"generation": generation.name, "datasets": list(SCHEMAS)}, handle, indent=2)
             handle.write("\n")
+        # An exception can arrive after replace commits but before it returns.
+        # From this point onward the complete generation must never be removed.
+        publication_attempted = True
         os.replace(pointer, output / "current.json")
-        published = True
         return generation
     finally:
         if staging.exists():
             shutil.rmtree(staging)
         pointer.unlink(missing_ok=True)
-        if not published and generation.exists():
+        if not publication_attempted and generation.exists():
             shutil.rmtree(generation)

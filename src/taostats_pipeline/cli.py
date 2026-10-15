@@ -18,9 +18,16 @@ def main(argv=None) -> int:
     local.add_argument("--output", type=Path, required=True)
     check = commands.add_parser("validate", help="Validate local HTML without exporting")
     check.add_argument("--input", type=Path, required=True)
+    for command in (demo, local, check):
+        command.add_argument(
+            "--strict",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Require critical metrics; overrides manifest strict_validation",
+        )
     args = parser.parse_args(argv)
     source = Path(__file__).parent / "fixtures" if args.command == "demo" else args.input
-    result = run(source, getattr(args, "output", None))
+    result = run(source, getattr(args, "output", None), strict=args.strict)
     report = asdict(result.validation)
     report["generation"] = str(result.generation) if result.generation else None
     print(json.dumps(report, ensure_ascii=False, indent=2))

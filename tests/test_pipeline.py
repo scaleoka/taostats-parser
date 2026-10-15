@@ -245,7 +245,11 @@ def test_export_failure_preserves_previous_generation(tmp_path, monkeypatch, fai
     assert result.validation.status == "error"
     assert (tmp_path / "current.json").read_bytes() == previous
     assert {p.name: p.read_bytes() for p in first.generation.iterdir()} == contents
-    assert len(list(tmp_path.iterdir())) == 2
+    # Once pointer replacement is attempted its outcome may be ambiguous, so
+    # retain the complete generation even when this injected failure preceded it.
+    assert len(list(tmp_path.iterdir())) == (3 if failure == "pointer" else 2)
+    assert not list(tmp_path.glob(".staging-*"))
+    assert not list(tmp_path.glob(".current-*.tmp"))
 
 
 def test_parse_failure_does_not_export(local_input, tmp_path):
@@ -304,4 +308,176 @@ def test_invalid_data_cannot_be_exported(tmp_path):
     datasets["metadata"] = []
     with pytest.raises(ValueError, match="Export refused"):
         exporters.export(datasets, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("exception", [OSError, RuntimeError, KeyboardInterrupt])
+def test_exception_after_pointer_replace_never_deletes_published_generation(
+    tmp_path, monkeypatch, exception
+):
+    previous = exporters.export(data(), tmp_path)
+    previous_contents = {p.name: p.read_bytes() for p in previous.iterdir()}
+    original_replace = exporters.os.replace
+
+    def replace_then_raise(source, destination):
+        original_replace(source, destination)
+        if Path(destination).name == "current.json":
+            raise exception("synthetic failure after pointer publication")
+
+    monkeypatch.setattr(exporters.os, "replace", replace_then_raise)
+    with pytest.raises(exception, match="after pointer publication"):
+        exporters.export(data(), tmp_path)
+    current = tmp_path / json.loads((tmp_path / "current.json").read_text())["generation"]
+    assert current != previous
+    assert {p.name: p.read_bytes() for p in current.iterdir()} == previous_contents
+    assert {p.name: p.read_bytes() for p in previous.iterdir()} == previous_contents
+    assert len(list(current.iterdir())) == 6
+
+
+@pytest.mark.parametrize("provided_pages", [0, 1, 3])
+def test_metric_page_count_mismatch_blocks_export(local_input, tmp_path, provided_pages):
+    output = tmp_path / "out"
+    previous = run(local_input, output).generation
+    pointer = (output / "current.json").read_bytes()
+    path = local_input / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["subnets"][0]["expected_metric_pages"] = 2
+    manifest["subnets"][0]["metrics"] = ["metrics.html"] * provided_pages
+    path.write_text(json.dumps(manifest))
+    result = run(local_input, output)
+    assert result.validation.status == "error"
+    assert result.validation.missing_ids["validator_metrics"] == [7]
+    assert any(
+        f"Expected 2 metric pages, got {provided_pages}" in error
+        for error in result.validation.errors
+    )
+    assert (output / "current.json").read_bytes() == pointer
+    assert previous.is_dir() and result.generation is None
+    assert len(list(output.glob("run-*"))) == 1
+
+
+@pytest.mark.parametrize("expected_pages", [None, True, 0, -1, "2", 2.0])
+def test_invalid_expected_metric_pages(local_input, tmp_path, expected_pages):
+    path = local_input / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["subnets"][0]["expected_metric_pages"] = expected_pages
+    path.write_text(json.dumps(manifest))
+    result = run(local_input, tmp_path / "out")
+    assert result.validation.status == "error"
+    assert any("positive integer" in error for error in result.validation.errors)
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("expected_pages", [None, 2])
+def test_metric_page_count_optional_or_matching(local_input, tmp_path, expected_pages):
+    path = local_input / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["subnets"][0]["metrics"] = ["metrics.html", "second-page.html"]
+    if expected_pages is not None:
+        manifest["subnets"][0]["expected_metric_pages"] = expected_pages
+    (local_input / "second-page.html").write_text(read("metrics.html"))
+    path.write_text(json.dumps(manifest))
+    result = run(local_input, tmp_path / "out")
+    assert result.validation.status == "ok" and result.generation.is_dir()
+
+
+def test_matching_count_does_not_hide_missing_page_file(local_input, tmp_path):
+    path = local_input / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["subnets"][0]["expected_metric_pages"] = 2
+    manifest["subnets"][0]["metrics"] = ["metrics.html", "missing-page.html"]
+    path.write_text(json.dumps(manifest))
+    assert run(local_input, tmp_path / "out").validation.status == "error"
+    assert not (tmp_path / "out").exists()
+
+
+def strict_data():
+    datasets = data()
+    datasets["subnets"] = [
+        replace(record, emission=Decimal("0"), price=Decimal("0")) for record in datasets["subnets"]
+    ]
+    datasets["validator_metrics"] = [
+        ValidatorMetrics(i, STAMP, *([Decimal("0")] * 5)) for i in (7, 42)
+    ]
+    return datasets
+
+
+@pytest.mark.parametrize(
+    "category,field",
+    [
+        ("subnets", "emission"),
+        ("subnets", "price"),
+        ("validator_metrics", "vtrust_avg"),
+        ("validator_metrics", "incentive_orange_max"),
+        ("validator_metrics", "incentive_orange_min"),
+        ("validator_metrics", "incentive_green_max"),
+        ("validator_metrics", "incentive_green_min"),
+    ],
+)
+def test_strict_mode_requires_each_critical_metric(category, field):
+    datasets = strict_data()
+    datasets[category][0] = replace(datasets[category][0], **{field: None})
+    result = validate(datasets, strict=True)
+    assert result.status == "error"
+    assert any(f"netuid=7.{field}: required metric missing" in error for error in result.errors)
+
+
+def test_strict_accepts_zero_and_leaves_other_fields_optional():
+    assert validate(strict_data(), strict=True).status == "ok"
+    assert validate(data()).status == "ok"
+
+
+def test_strict_export_cannot_bypass_validation(tmp_path):
+    with pytest.raises(ValueError, match="required metric missing"):
+        exporters.export(data(), tmp_path / "out", strict=True)
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("enable_in_manifest", [False, True])
+def test_strict_pipeline_preserves_previous_output(local_input, tmp_path, enable_in_manifest):
+    output = tmp_path / "out"
+    previous = run(local_input, output).generation
+    pointer = (output / "current.json").read_bytes()
+    (local_input / "metrics.html").write_text(
+        read("metrics.html").replace("0.4", "N/A").replace("0.8", "N/A")
+    )
+    if enable_in_manifest:
+        path = local_input / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["strict_validation"] = True
+        path.write_text(json.dumps(manifest))
+        result = run(local_input, output)
+    else:
+        assert run(local_input).validation.status == "ok"
+        result = run(local_input, output, strict=True)
+    assert result.validation.status == "error"
+    assert any("vtrust_avg: required metric missing" in error for error in result.validation.errors)
+    assert (output / "current.json").read_bytes() == pointer
+    assert previous.is_dir() and result.generation is None
+
+
+def test_cli_strict_override(local_input, tmp_path, capsys):
+    path = local_input / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["strict_validation"] = True
+    path.write_text(json.dumps(manifest))
+    (local_input / "metrics.html").write_text(
+        read("metrics.html").replace("0.4", "N/A").replace("0.8", "N/A")
+    )
+    assert main(["validate", "--input", str(local_input)]) == 1
+    assert main(["validate", "--input", str(local_input), "--no-strict"]) == 0
+    assert main(["validate", "--input", str(local_input), "--strict"]) == 1
+    assert main(["demo", "--strict", "--output", str(tmp_path / "demo")]) == 0
+    assert '"status": "ok"' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", [None, "true", 1, [], {}])
+def test_manifest_strict_flag_must_be_boolean(local_input, tmp_path, value):
+    path = local_input / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["strict_validation"] = value
+    path.write_text(json.dumps(manifest))
+    result = run(local_input, tmp_path / "out")
+    assert result.validation.status == "error"
+    assert any("strict_validation must be a boolean" in error for error in result.validation.errors)
     assert not (tmp_path / "out").exists()
