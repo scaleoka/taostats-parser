@@ -34,6 +34,8 @@ def block_external_operations(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", blocked)
     monkeypatch.setattr(socket.socket, "connect_ex", blocked)
     monkeypatch.setattr(socket, "create_connection", blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    monkeypatch.setattr(socket.socket, "sendto", blocked)
     monkeypatch.setattr(subprocess, "Popen", blocked)
 
 

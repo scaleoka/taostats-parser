@@ -1,4 +1,23 @@
-# Tool configuration only; requirements.txt remains unchanged.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taostats-pipeline"
+version = "0.2.0"
+description = "Validated offline HTML data pipeline"
+requires-python = ">=3.10"
+dependencies = ["beautifulsoup4>=4.12,<5"]
+
+[project.scripts]
+taostats-pipeline = "taostats_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["taostats_pipeline*"]
+
+[tool.setuptools.package-data]
+taostats_pipeline = ["fixtures/*.html", "fixtures/*.json"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
@@ -6,8 +25,7 @@ addopts = "-ra --strict-markers --strict-config"
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-# Legacy src remains unchanged and outside the initial lint scope.
-include = ["tests/**/*.py", "pyproject.toml"]
+include = ["src/taostats_pipeline/**/*.py", "tests/**/*.py", "pyproject.toml"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
