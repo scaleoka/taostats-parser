@@ -13,6 +13,7 @@ from .validation import ValidationResult, validate
 class PipelineResult:
     validation: ValidationResult
     generation: Path | None = None
+    datasets: dict | None = None
 
 
 def local_file(root: Path, name: str) -> Path:
@@ -88,7 +89,7 @@ def run(
         errors.append(f"Input manifest: {exc}")
     report.errors.extend(errors)
     report.status = "error" if report.errors else "ok"
-    result = PipelineResult(report)
+    result = PipelineResult(report, datasets=datasets)
     if report.status == "ok" and output is not None:
         try:
             result.generation = export(datasets, output, strict=selected_strict)
