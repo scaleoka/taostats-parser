@@ -9,6 +9,9 @@ description = "Validated offline HTML data pipeline"
 requires-python = ">=3.10"
 dependencies = ["beautifulsoup4>=4.12,<5"]
 
+[project.optional-dependencies]
+google = ["google-api-python-client>=2,<3", "google-auth>=2,<3"]
+
 [project.scripts]
 taostats-pipeline = "taostats_pipeline.cli:main"
 
