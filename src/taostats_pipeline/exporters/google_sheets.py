@@ -33,6 +33,18 @@ class SheetsError(Exception):
     """Safe, deliberately redacted diagnostic."""
 
 
+class VerificationMismatch(SheetsError):
+    """A readable response contradicts the expected literal-text data."""
+
+
+class StructureChanged(SheetsError):
+    """Observed structure no longer matches the preflight snapshot."""
+
+
+class PublicationUnresolved(SheetsError):
+    """The returned journal does not confirm our final batch."""
+
+
 @dataclass(frozen=True)
 class Config:
     spreadsheet_id: str
@@ -94,10 +106,55 @@ def tables(datasets, strict=False):
 
 
 def normalized(rows, width):
-    result = [list(map(str, row)) + [""] * (width - len(row)) for row in rows]
+    """Restore omitted blanks without coercing JSON numbers/bools to strings."""
+    if not isinstance(rows, list):
+        raise VerificationMismatch("Invalid values response")
+    result = []
+    for row in rows:
+        if not isinstance(row, list) or any(type(value) is not str for value in row):
+            raise VerificationMismatch("Expected literal text cells in values response")
+        row = row[:]
+        while row and row[-1] == "":
+            row.pop()
+        if len(row) > width:
+            raise VerificationMismatch("Unexpected nonempty columns in values response")
+        result.append(row + [""] * (width - len(row)))
     while result and not any(result[-1]):
         result.pop()
     return result
+
+
+def structure(api, names):
+    """Copy the identity and dimensions that our publication requests depend on."""
+    found = {}
+    for sheet in api.structure()["sheets"]:
+        prop = sheet["properties"]
+        name = prop["title"]
+        if name not in names:
+            continue
+        grid = prop.get("gridProperties", {})
+        if (
+            name in found
+            or prop.get("sheetType", "GRID") != "GRID"
+            or any(
+                type(grid.get(key)) is not int or grid[key] < 1
+                for key in ("rowCount", "columnCount")
+            )
+        ):
+            raise StructureChanged("Incompatible sheet structure")
+        found[name] = {
+            "sheetId": prop["sheetId"],
+            "title": name,
+            "gridProperties": {key: grid[key] for key in ("rowCount", "columnCount")},
+        }
+    if set(found) != set(names):
+        raise StructureChanged("Required sheet names missing (exact names required)")
+    return found
+
+
+def check_structure(api, expected):
+    if structure(api, expected) != expected:
+        raise StructureChanged("Sheet identity or dimensions changed during publication")
 
 
 class GoogleAPI:
@@ -149,7 +206,7 @@ class GoogleAPI:
         return self.execute(
             lambda: self.api.get(
                 spreadsheetId=self.config.spreadsheet_id,
-                fields="sheets.properties(sheetId,title,gridProperties)",
+                fields="sheets.properties(sheetId,title,sheetType,gridProperties)",
             ),
             retry=True,
         )
@@ -159,6 +216,7 @@ class GoogleAPI:
             lambda: self.api.values().get(
                 spreadsheetId=self.config.spreadsheet_id,
                 range=f"'{title}'",
+                majorDimension="ROWS",
                 valueRenderOption="UNFORMATTED_VALUE",
             ),
             retry=True,
@@ -217,6 +275,8 @@ def publish(
         "record_counts": {},
         "dry_run": not apply,
         "already_published": False,
+        "current_data_status": "unverified",
+        "verification": "not_attempted",
     }
     started = now()
     api = None
@@ -239,9 +299,7 @@ def publish(
         config = config or Config.from_env()
         config.check()
         api = api_factory(config)
-        properties = {s["properties"]["title"]: s["properties"] for s in api.structure()["sheets"]}
-        if not set(HEADERS).issubset(properties):
-            raise SheetsError("Required sheet names missing (exact names required)")
+        properties = structure(api, HEADERS)
         existing = {}
         for name, header in HEADERS.items():
             existing[name] = api.read(name)
@@ -257,7 +315,21 @@ def publish(
                 and len(matches[0]) == len(STATUS_COLUMNS)
                 and (matches[0][3] == "success" and matches[0][-1] == digest)
             ):
-                result.update(status="success", already_published=True)
+                try:
+                    matches_current = all(
+                        normalized(existing[name], len(rows[0])) == rows
+                        for name, rows in prepared.items()
+                    )
+                except VerificationMismatch:
+                    matches_current = False
+                check_structure(api, properties)
+                result.update(
+                    status="already_published",
+                    already_published=True,
+                    historical_status="success",
+                    current_data_status="matches" if matches_current else "differs",
+                    verification="matched" if matches_current else "mismatch",
+                )
                 return result
             raise SheetsError("run_id already exists with different data or non-success status")
         row_index = len(journal)
@@ -278,10 +350,16 @@ def publish(
             ]
 
         stages = {}
+        expected_structure = dict(properties)
         for name, rows in prepared.items():
             title = f"_stage_{uuid4().hex}_{name}"
             sheet_id = int(uuid4().hex[:7], 16)
             stages[name] = (title, sheet_id)
+            expected_structure[title] = {
+                "sheetId": sheet_id,
+                "title": title,
+                "gridProperties": {"rowCount": len(rows), "columnCount": len(rows[0])},
+            }
             # Remember before request: a lost response can still leave a staging sheet.
             stage_ids.append(sheet_id)
             config.check()
@@ -305,23 +383,40 @@ def publish(
             config.check()
             api.write(title, rows)
             if normalized(api.read(title), len(rows[0])) != rows:
-                raise SheetsError("Staging verification failed")
+                raise VerificationMismatch("Staging verification failed")
+        # This is detection, not a lock/CAS. A race after these reads remains possible.
+        check_structure(api, expected_structure)
+        for name in HEADERS:
+            if api.read(name) != existing[name]:
+                raise StructureChanged("Headers, data or run journal changed during staging")
+        for name, rows in prepared.items():
+            if normalized(api.read(stages[name][0]), len(rows[0])) != rows:
+                raise VerificationMismatch("Staging verification failed before commit")
         requests = []
         for name, rows in prepared.items():
             prop = properties[name]
             height = max(prop["gridProperties"]["rowCount"], len(rows))
             width = max(prop["gridProperties"]["columnCount"], len(rows[0]))
-            requests.append(
-                {
-                    "updateSheetProperties": {
-                        "properties": {
-                            "sheetId": prop["sheetId"],
-                            "gridProperties": {"rowCount": height, "columnCount": width},
-                        },
-                        "fields": "gridProperties.rowCount,gridProperties.columnCount",
+            # Grow only when necessary; narrow masks preserve unrelated grid settings.
+            if (
+                height != prop["gridProperties"]["rowCount"]
+                or width != prop["gridProperties"]["columnCount"]
+            ):
+                requests.append(
+                    {
+                        "updateSheetProperties": {
+                            "properties": {
+                                "sheetId": prop["sheetId"],
+                                "gridProperties": {"rowCount": height, "columnCount": width},
+                            },
+                            "fields": "gridProperties.rowCount,gridProperties.columnCount",
+                        }
                     }
-                }
-            )
+                )
+            expected_structure[name] = {
+                **prop,
+                "gridProperties": {"rowCount": height, "columnCount": width},
+            }
             # Clear obsolete values only inside the same atomic batch as copying the new data.
             requests.append(
                 {
@@ -354,6 +449,7 @@ def publish(
             )
         committed_row = status_row("success")
         requests.append(update_rows(status_id, [committed_row], row_index))
+        published_structure = {name: expected_structure[name] for name in HEADERS}
         config.check()
         commit_attempted = True
         try:
@@ -362,23 +458,54 @@ def publish(
             # No blind retries: the server may have committed before losing the response.
             pass
         observed = api.read("run_status")
-        if len(observed) <= row_index or observed[row_index] != list(map(cell, committed_row)):
-            raise SheetsError("Final publication outcome unresolved")
+        expected_journal = journal + [list(map(cell, committed_row))]
+        if observed != expected_journal:
+            raise PublicationUnresolved("Final publication outcome unresolved: journal mismatch")
         journal_written = True
+        check_structure(api, published_structure)
         for name, rows in prepared.items():
             if normalized(api.read(name), len(rows[0])) != rows:
-                raise SheetsError("Published data verification failed")
-        result["status"] = "success"
-        # Cleanup is an operation required for a clean success report.
-        config.check()
-        api.batch([{"deleteSheet": {"sheetId": i}} for i in stage_ids])
-        stage_ids.clear()
+                raise VerificationMismatch("Published data verification failed")
+        check_structure(api, published_structure)
+        if api.read("run_status") != expected_journal:
+            raise PublicationUnresolved("Run journal changed during verification")
+        result.update(status="success", current_data_status="matches", verification="matched")
+        try:
+            config.check()
+            check_structure(api, {title: expected_structure[title] for title, _ in stages.values()})
+            api.batch([{"deleteSheet": {"sheetId": i}} for i in stage_ids])
+            stage_ids.clear()
+        except Exception:
+            # Confirmed publication remains successful, including its journal row.
+            result["cleanup_warning"] = (
+                "Staging cleanup could not be confirmed; inspect staging IDs"
+            )
     except Exception as exc:
         error = str(exc) if isinstance(exc, SheetsError) else "Sheets publication failed"
         result.update(status="partial" if commit_attempted else "failed", error_summary=error)
-        if api and journal_ready and (not commit_attempted or journal_written):
+        if isinstance(exc, VerificationMismatch):
+            result["verification"] = "mismatch"
+            if commit_attempted:
+                result["current_data_status"] = "differs"
+        elif isinstance(exc, StructureChanged):
+            result["verification"] = "structure_changed"
+        elif isinstance(exc, PublicationUnresolved):
+            result["verification"] = "journal_mismatch"
+        elif commit_attempted:
+            result["verification"] = "unavailable"
+        # An unreadable response is not evidence of corruption: retain possible success.
+        can_record = not commit_attempted or (
+            journal_written and isinstance(exc, VerificationMismatch)
+        )
+        if api and journal_ready and can_record and not isinstance(exc, StructureChanged):
             try:
                 config.check()
+                check_structure(api, {"run_status": properties["run_status"]})
+                current_journal = api.read("run_status")
+                if (not commit_attempted and current_journal != journal) or (
+                    commit_attempted and current_journal != expected_journal
+                ):
+                    raise StructureChanged("Run journal changed; refusing status overwrite")
                 api.batch(
                     [update_rows(status_id, [status_row(result["status"], error)], row_index)]
                 )

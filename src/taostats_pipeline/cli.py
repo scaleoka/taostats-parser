@@ -57,7 +57,7 @@ def main(argv=None) -> int:
             strict=args.strict if args.strict is not None else False,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if report["status"] in ("success", "dry_run") else 1
+        return 0 if report["status"] in ("success", "dry_run", "already_published") else 1
     report = asdict(result.validation)
     report["generation"] = str(result.generation) if result.generation else None
     print(json.dumps(report, ensure_ascii=False, indent=2))
