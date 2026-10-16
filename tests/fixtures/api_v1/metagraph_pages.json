@@ -1,0 +1,4 @@
+[
+  {"data":[{"netuid":7,"uid":0,"block_number":100},{"netuid":7,"uid":1,"block_number":100}],"pagination":{"current_page":1,"per_page":2,"total_items":3,"total_pages":2,"next_page":2,"prev_page":null}},
+  {"data":[{"netuid":7,"uid":2,"block_number":100}],"pagination":{"current_page":2,"per_page":2,"total_items":3,"total_pages":2,"next_page":null,"prev_page":1}}
+]
