@@ -171,6 +171,21 @@ Ruff проверяет пакет, тесты и конфигурацию. CI �
 
 ## Google Sheets: только явная публикация
 
+На Windows рекомендуется безопасная обёртка (Windows PowerShell 5.1 / PowerShell 7):
+
+```powershell
+.\scripts\publish_sheets.ps1
+# Только после настройки внешнего JSON и отдельного allowlist:
+.\scripts\publish_sheets.ps1 -Apply -ConfigPath $configPath -RunId demo-001
+```
+
+По умолчанию она выполняет только локальный dry-run на синтетических fixtures;
+конфигурация и ключ не нужны. Apply требует явный RunId, отдельную переменную
+`GOOGLE_ALLOWED_SPREADSHEET_ID`, существующий внешний ключ и точный ввод
+`PUBLISH demo-001`. Python запускается через `py -m`; автоматического повтора нет.
+Пошаговая [настройка Windows](docs/google-sheets-setup.md#windows-powershell-launcher)
+включает формат JSON, проверку launcher и восстановление после ошибок.
+
 ```bash
 python -m taostats_pipeline publish-sheets --input ./src/taostats_pipeline/fixtures --dry-run
 ```
@@ -215,5 +230,14 @@ CLI-отчёт описывает текущий запуск. При измен
 изменять таблицы; новый пакет их не использует. `requirements.txt` относится к legacy
 и для demo не нужен. `.env.example` — образец переменных окружения; пакет её не читает.
 Credentials, рабочие ресурсы и данные прежней команды не используются.
+
+Отдельные offline-тесты обёртки: `python tests/launcher_checks.py`.
+Они запускают PowerShell с подменёнными `py` и подтверждением, без Google API.
+Основной pytest сохраняет запрет дочерних процессов. В Linux проверки могут
+пропускаться без PowerShell; отдельный Windows job обязательно проверяет PowerShell
+5.1 и 7. `python tests/launcher_checks.py --require-powershell` запрещает отсутствие
+shell и пропуск всего набора (`LAUNCHER_TEST_SHELL` выбирает executable).
+Обычный запуск обёртки выполняется без ExecutionPolicy Bypass; локальный smoke-test
+с настоящим `py.exe` в режиме dry-run описан в setup docs.
 
 Архитектура и границы гарантий описаны в [docs/architecture.md](docs/architecture.md).
