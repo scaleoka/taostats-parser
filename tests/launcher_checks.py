@@ -139,17 +139,11 @@ exit $resultCode
         result, calls = self.launch(config=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(
-            calls[0]["arguments"],
-            [
-                "-m",
-                "taostats_pipeline",
-                "publish-sheets",
-                "--input",
-                str(ROOT / "src/taostats_pipeline/fixtures"),
-                "--dry-run",
-            ],
-        )
+        arguments = calls[0]["arguments"]
+        self.assertEqual(len(arguments), 6)
+        self.assertEqual(arguments[:4], ["-m", "taostats_pipeline", "publish-sheets", "--input"])
+        self.assertTrue(os.path.samefile(arguments[4], ROOT / "src/taostats_pipeline/fixtures"))
+        self.assertEqual(arguments[5:], ["--dry-run"])
         self.assertEqual(calls[0]["target"], "previous-target")
 
     def test_dry_run_ignores_invalid_configuration(self):
@@ -210,17 +204,20 @@ exit $resultCode
                 self.assert_refused(run_id="demo-001")
 
     def test_utf8_config_with_and_without_bom(self):
-        # Includes Cyrillic in the key path; both engines must preserve it exactly.
+        # Preserve the Cyrillic file identity, allowing Windows 8.3 path aliases.
         for encoding in ("utf-8", "utf-8-sig"):
             with self.subTest(encoding=encoding):
-                self.write_config()
-                document = self.config.read_text(encoding="utf-8")
-                self.config.write_text(document, encoding=encoding)
-                result, calls = self.launch(apply=True, run_id="demo-001")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(len(calls), 1)
-                self.assertEqual(calls[0]["credentials"], str(self.key))
-                self.calls.unlink()
+                try:
+                    self.write_config()
+                    document = self.config.read_text(encoding="utf-8")
+                    self.config.write_text(document, encoding=encoding)
+                    result, calls = self.launch(apply=True, run_id="demo-001")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(len(calls), 1)
+                    self.assertTrue(os.path.samefile(calls[0]["credentials"], self.key))
+                finally:
+                    # A failed assertion must not contaminate the next encoding's log.
+                    self.calls.unlink(missing_ok=True)
 
     def test_apply_arguments_spaces_exit_and_no_retry(self):
         source = self.directory / "input with spaces & literal"
@@ -229,20 +226,15 @@ exit $resultCode
         result, calls = self.launch(apply=True, run_id="demo-001", CHECK_EXIT="23")
         self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(
-            calls[0]["arguments"],
-            [
-                "-m",
-                "taostats_pipeline",
-                "publish-sheets",
-                "--input",
-                str(source),
-                "--run-id",
-                "demo-001",
-                "--apply",
-            ],
-        )
-        self.assertEqual(calls[0]["credentials"], str(self.key))
+        arguments = calls[0]["arguments"]
+        # Exactly one argument after --input, including the spaces and literal &.
+        self.assertEqual(len(arguments), 8)
+        self.assertEqual(arguments[:4], ["-m", "taostats_pipeline", "publish-sheets", "--input"])
+        self.assertTrue(os.path.samefile(arguments[4], source))
+        self.assertIn(" ", arguments[4])
+        self.assertIn("&", arguments[4])
+        self.assertEqual(arguments[5:], ["--run-id", "demo-001", "--apply"])
+        self.assertTrue(os.path.samefile(calls[0]["credentials"], self.key))
         self.assertEqual(calls[0]["target"], self.target)
         self.assertEqual(calls[0]["allowed"], self.target)
 
