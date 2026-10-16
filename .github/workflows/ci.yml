@@ -28,5 +28,33 @@ jobs:
         run: python -m ruff format --check .
       - name: Run offline unit tests
         run: python -m pytest
+      - name: Check PowerShell launcher with inert Python stub
+        run: python tests/launcher_checks.py
       - name: Run offline demo
         run: python -m taostats_pipeline demo --output ./output
+
+  windows-launcher:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        powershell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Require PowerShell and run offline launcher checks
+        shell: pwsh
+        env:
+          CHECK_SHELL_NAME: ${{ matrix.powershell }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:LAUNCHER_TEST_SHELL = (Get-Command $env:CHECK_SHELL_NAME -CommandType Application -ErrorAction Stop).Source
+          & $env:LAUNCHER_TEST_SHELL -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/launcher_checks.py --require-powershell
+          exit $LASTEXITCODE

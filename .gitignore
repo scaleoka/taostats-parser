@@ -19,6 +19,7 @@ secrets/
 *service-account*.json
 client_secret*.json
 token.json
+publish-sheets.local.json
 # Test output, logs and temporary files
 .pytest_cache/
 .ruff_cache/
