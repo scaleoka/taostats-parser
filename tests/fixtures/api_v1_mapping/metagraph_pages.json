@@ -1,0 +1,102 @@
+[
+  {
+    "data": [
+      {
+        "uid": 0,
+        "active": true,
+        "validator_permit": true,
+        "validator_trust": "0",
+        "incentive": "0",
+        "is_immune": true,
+        "is_owner_hotkey": true,
+        "in_danger": false,
+        "netuid": 7,
+        "block_number": 1000,
+        "timestamp": "synthetic-source-token"
+      },
+      {
+        "uid": 1,
+        "active": true,
+        "validator_permit": true,
+        "validator_trust": "0.12345678901234567890123456789",
+        "incentive": "0.12345678901234567890123456789",
+        "is_immune": false,
+        "is_owner_hotkey": false,
+        "in_danger": false,
+        "netuid": 7,
+        "block_number": 1000,
+        "timestamp": "synthetic-source-token"
+      },
+      {
+        "uid": 2,
+        "active": false,
+        "validator_permit": true,
+        "validator_trust": "100",
+        "incentive": "0.8",
+        "is_immune": false,
+        "is_owner_hotkey": false,
+        "in_danger": true,
+        "netuid": 7,
+        "block_number": 1000,
+        "timestamp": "synthetic-source-token"
+      }
+    ],
+    "pagination": {
+      "current_page": 1,
+      "per_page": 3,
+      "total_items": 6,
+      "total_pages": 2,
+      "next_page": 2,
+      "prev_page": null
+    }
+  },
+  {
+    "data": [
+      {
+        "uid": 3,
+        "active": true,
+        "validator_permit": false,
+        "validator_trust": null,
+        "incentive": "0.2",
+        "is_immune": true,
+        "is_owner_hotkey": false,
+        "in_danger": true,
+        "netuid": 7,
+        "block_number": 1000,
+        "timestamp": "synthetic-source-token"
+      },
+      {
+        "uid": 4,
+        "active": false,
+        "validator_permit": false,
+        "incentive": "0.9",
+        "is_immune": false,
+        "is_owner_hotkey": false,
+        "in_danger": false,
+        "netuid": 7,
+        "block_number": 1000,
+        "timestamp": "synthetic-source-token"
+      },
+      {
+        "uid": 5,
+        "active": true,
+        "validator_permit": false,
+        "incentive": "0",
+        "is_immune": false,
+        "is_owner_hotkey": false,
+        "in_danger": false,
+        "netuid": 7,
+        "block_number": 1000,
+        "timestamp": "synthetic-source-token"
+      }
+    ],
+    "pagination": {
+      "current_page": 2,
+      "per_page": 3,
+      "total_items": 6,
+      "total_pages": 2,
+      "next_page": null,
+      "prev_page": 1
+    }
+  }
+]
