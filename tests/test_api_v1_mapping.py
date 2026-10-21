@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from taostats_pipeline.api_v1 import ResponseError
+from taostats_pipeline import api_v1 as validation
+from taostats_pipeline import api_v1_mapping as mapping
+from taostats_pipeline.api_v1 import Budget, PageMerger, ResponseError
 from taostats_pipeline.api_v1_mapping import (
     IncentiveBounds,
     MappingError,
@@ -393,3 +395,91 @@ def test_mean_sum_keeps_small_terms_and_input_precision(pages):
     rows[1].update(validator_trust="1e-100", active=True, validator_permit=True)
     expected = Decimal("0.5" + "0" * 99 + "5")
     assert vtrust_avg([envelope(rows)], netuid=7) == expected
+
+
+def completed(pages, endpoint=METAGRAPH, keys=None):
+    target = PageMerger(endpoint, Budget(len(pages), len(pages)), key_fields=keys)
+    for page in pages:
+        target.reserve_next_page()
+        target.accept(page)
+    return target.finish_query()
+
+
+def test_completed_query_equals_envelope_path_without_pagination_replay(pages, monkeypatch):
+    query = completed(pages)
+    batch = normalize_pages(METAGRAPH, pages, netuid=7, expected_block=1000)
+    average = vtrust_avg(pages, netuid=7)
+    bounds = incentive_bounds(pages, netuid=7, filters={"is_immune": True})
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("CompletedQuery must not replay pagination or reserve Budget")
+
+    monkeypatch.setattr(mapping, "Budget", forbidden)
+    monkeypatch.setattr(mapping, "PageMerger", forbidden)
+    monkeypatch.setattr(validation, "parse_envelope", forbidden)
+    assert normalize_pages(METAGRAPH, query, netuid=7, expected_block=1000) == batch
+    assert vtrust_avg(query, netuid=7) == average
+    assert incentive_bounds(query, netuid=7, filters={"is_immune": True}) == bounds
+
+
+def test_completed_query_checks_endpoint_netuid_and_expected_block(pages):
+    query = completed(pages)
+    with pytest.raises(MappingError, match="endpoint differs"):
+        normalize_pages("/v1/subnets/metrics", query, netuid=7)
+    with pytest.raises(MappingError, match="netuid differs"):
+        normalize_pages(METAGRAPH, query, netuid=8)
+    with pytest.raises(MappingError, match="expected_block"):
+        vtrust_avg(query, netuid=7, expected_block=1001)
+    with pytest.raises(MappingError, match="netuid differs"):
+        incentive_bounds(query, netuid=8, filters={"active": True})
+    with pytest.raises(ResponseError):
+        normalize_pages(METAGRAPH, query.rows, netuid=7)  # Plain rows are never trusted.
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("validator_trust", None),
+        ("validator_trust", -1),
+        ("validator_trust", 0.5),
+        ("active", "true"),
+        ("validator_permit", None),
+    ],
+)
+def test_completed_query_does_not_bypass_metric_and_filter_validation(pages, field, value):
+    pages[0]["data"][0][field] = value
+    query = completed(pages)  # Pagination is valid; metric semantics may not be.
+    with pytest.raises(MappingError):
+        vtrust_avg(query, netuid=7)
+
+
+def test_completed_query_does_not_bypass_incentive_validation(pages):
+    del pages[0]["data"][0]["incentive"]
+    query = completed(pages)
+    with pytest.raises(MappingError, match="missing"):
+        incentive_bounds(query, netuid=7, filters={"is_immune": True})
+
+
+def test_completed_metagraph_still_requires_block_evidence(pages):
+    for page in pages:
+        for row in page["data"]:
+            del row["block_number"]
+    query = completed(pages)
+    with pytest.raises(MappingError, match="block_number is required"):
+        normalize_pages(METAGRAPH, query, netuid=7)
+
+
+def test_completed_query_does_not_bypass_narrow_nonmetagraph_contract():
+    pages = [envelope([{"netuid": 7, "pool_index": 0}, {"netuid": 7, "pool_index": 1}])]
+    query = completed(pages, "/v1/subnets/pools", ("netuid", "pool_index"))
+    with pytest.raises(MappingError, match="multiple records"):
+        normalize_pages("/v1/subnets/pools", query, netuid=7)
+
+
+def test_completed_empty_query_mapping_and_metrics():
+    query = completed([envelope([])])
+    assert normalize_pages(METAGRAPH, query, netuid=7).records == ()
+    assert vtrust_avg(query, netuid=7) is None
+    assert incentive_bounds(query, netuid=7, filters={"active": True}) == IncentiveBounds(
+        None, None, 0
+    )

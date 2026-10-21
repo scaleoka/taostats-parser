@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from taostats_pipeline.api_v1 import Budget, BudgetError, PageMerger, ResponseError, parse_envelope
+from taostats_pipeline.api_v1 import (
+    Budget,
+    BudgetError,
+    CompletedQuery,
+    PageMerger,
+    ResponseError,
+    parse_envelope,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "api_v1"
 METAGRAPH = "/v1/subnets/metagraph"
@@ -327,3 +334,87 @@ def test_normal_endpoint_path(endpoint):
     target = PageMerger(endpoint, budget, key_fields=keys)
     assert (budget.requests, budget.pages) == (0, 0)
     assert accept_all([envelope([])], target) == []
+
+
+@pytest.mark.parametrize("args", [(), (METAGRAPH, []), ([],)])
+def test_completed_query_has_no_public_data_constructor(args):
+    with pytest.raises(TypeError, match="finish_query"):
+        CompletedQuery(*args)
+
+
+@pytest.mark.parametrize("order", [("finish", "finish_query"), ("finish_query", "finish")])
+def test_both_finish_methods_repeat_without_budget_use_and_isolate_nested_data(order):
+    budget = Budget(1, 1)
+    target = merger(budget)
+    source = envelope([{"netuid": 7, "uid": 0, "extra": {"items": [{"value": "original"}]}}])
+    target.reserve_next_page()
+    target.accept(source)
+    for name in order * 2:
+        result = getattr(target, name)()
+        rows = result.rows if isinstance(result, CompletedQuery) else result
+        assert rows[0]["extra"]["items"][0]["value"] == "original"
+        rows[0]["extra"]["items"][0]["value"] = "external mutation"
+        rows.append({"netuid": 999})
+    query = target.finish_query()
+    source["data"][0]["extra"]["items"].clear()
+    assert query.rows == target.finish()
+    assert query.rows[0]["extra"]["items"][0]["value"] == "original"
+    assert (query.endpoint, query.total_items, query.total_pages) == (METAGRAPH, 1, 1)
+    for name, value in (
+        ("endpoint", "/v1/subnets/metrics"),
+        ("total_items", 999),
+        ("total_pages", 999),
+        ("rows", []),
+    ):
+        with pytest.raises((AttributeError, TypeError)):
+            setattr(query, name, value)
+    assert (budget.requests, budget.pages) == (1, 1)
+
+
+@pytest.mark.parametrize("total_pages", [0, 1])
+def test_completed_empty_query(total_pages):
+    response = envelope([])
+    response["pagination"]["total_pages"] = total_pages
+    target = merger(Budget(1, 1))
+    target.reserve_next_page()
+    target.accept(response)
+    query = target.finish_query()
+    assert query.rows == target.finish() == []
+    assert (query.total_items, query.total_pages) == (0, total_pages)
+
+
+@pytest.mark.parametrize("state", ["no_pages", "pending", "incomplete", "invalid"])
+def test_completed_query_never_exported_from_unfinished_or_failed_merger(state):
+    target = merger()
+    if state != "no_pages":
+        target.reserve_next_page()
+    if state == "incomplete":
+        target.accept(envelope([{"netuid": 7, "uid": 0}], size=1, total=2))
+    if state == "invalid":
+        with pytest.raises(ResponseError):
+            target.accept({})
+    with pytest.raises(ResponseError):
+        target.finish_query()
+    with pytest.raises(ResponseError, match="failed"):
+        target.finish()
+    with pytest.raises(ResponseError, match="failed"):
+        target.finish_query()
+
+
+@pytest.mark.parametrize("operation", ["reserve_next_page", "accept"])
+def test_no_new_pages_after_completion_and_exported_query_remains_detached(operation):
+    budget = Budget(2, 2)
+    target = merger(budget)
+    target.reserve_next_page()
+    target.accept(envelope([{"netuid": 7, "uid": 0}]))
+    query = target.finish_query()
+    with pytest.raises(ResponseError):
+        if operation == "accept":
+            target.accept(envelope([{"netuid": 7, "uid": 1}]))
+        else:
+            target.reserve_next_page()
+    for finish in (target.finish, target.finish_query):
+        with pytest.raises(ResponseError, match="failed"):
+            finish()
+    assert query.rows == [{"netuid": 7, "uid": 0}]
+    assert (budget.requests, budget.pages) == (1, 1)

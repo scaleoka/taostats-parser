@@ -536,3 +536,74 @@ def test_excessive_numbers_rejected_before_decimal_construction(monkeypatch, lit
     monkeypatch.setattr(http, "Decimal", forbidden_decimal)
     with pytest.raises(ValueError):
         http._float(literal)
+
+
+@pytest.mark.parametrize("order", [("finish", "finish_query"), ("finish_query", "finish")])
+def test_session_completed_query_and_legacy_finish_repeat_without_io(make, clock, order):
+    budget, allowance = Budget(2, 2), http.LiveAllowance(2)
+    transport, fake = make([page(1), page(2)], budget=budget, allowance=allowance)
+    session = transport.pages(ENDPOINT)
+    session.fetch_next_page(allow_live=True)
+    session.fetch_next_page(allow_live=True)
+    for name in order * 2:
+        result = getattr(session, name)()
+        rows = result.rows if name == "finish_query" else result
+        assert [row["uid"] for row in rows] == [1, 2]
+        rows[0]["uid"] = 999
+    query = session.finish_query()
+    assert [row["uid"] for row in query.rows] == [1, 2]
+    assert len(fake.calls) == 2
+    assert (budget.requests, budget.pages, allowance.requests) == (2, 2, 2)
+    assert clock[1] == [15.0]
+    with pytest.raises(http.TransportError):
+        session.fetch_next_page(allow_live=True)
+    with pytest.raises(http.TransportError, match="failed"):
+        session.finish_query()
+    assert [row["uid"] for row in query.rows] == [1, 2]
+
+
+@pytest.mark.parametrize("failure", ["no_pages", "incomplete", "http", "budget"])
+def test_session_finish_query_refuses_missing_pages_and_failures(make, failure):
+    budget = Budget(1, 2) if failure == "budget" else Budget(2, 2)
+    transport, fake = make([page(1), TimeoutError(KEY)], budget=budget)
+    session = transport.pages(ENDPOINT)
+    if failure != "no_pages":
+        session.fetch_next_page(allow_live=True)
+    if failure in ("http", "budget"):
+        with pytest.raises((http.TransportError, BudgetError)):
+            session.fetch_next_page(allow_live=True)
+    with pytest.raises((http.TransportError, ResponseError)):
+        session.finish_query()
+    with pytest.raises((http.TransportError, ResponseError)):
+        session.finish()
+    with pytest.raises((http.TransportError, ResponseError)):
+        session.finish_query()
+    assert len(fake.calls) == {"no_pages": 0, "incomplete": 1, "http": 2, "budget": 1}[failure]
+
+
+def test_session_rejects_extra_page_with_unused_allowance_without_http(make):
+    body = json.dumps(
+        {
+            "data": [],
+            "pagination": {
+                "current_page": 1,
+                "per_page": 1,
+                "total_items": 0,
+                "total_pages": 0,
+                "next_page": None,
+                "prev_page": None,
+            },
+        }
+    ).encode()
+    budget, allowance = Budget(2, 2), http.LiveAllowance(2)
+    transport, fake = make([FakeResponse(body)], budget=budget, allowance=allowance)
+    session = transport.pages(ENDPOINT)
+    session.fetch_next_page(allow_live=True)
+    query = session.finish_query()
+    with pytest.raises(ResponseError, match="query complete"):
+        session.fetch_next_page(allow_live=True)
+    assert (budget.requests, budget.pages, allowance.requests) == (1, 1, 2)
+    assert len(fake.calls) == 1
+    with pytest.raises(http.TransportError, match="failed"):
+        session.finish_query()
+    assert query.rows == []
