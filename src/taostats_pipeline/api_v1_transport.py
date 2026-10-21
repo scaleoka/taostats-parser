@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from .api_v1 import Budget, PageMerger
+from .api_v1 import Budget, CompletedQuery, PageMerger
 
 _BASE = "https://api.taostats.io/v1/"
 _ENDPOINTS = frozenset(
@@ -300,3 +300,10 @@ class PageSession:
         if self._failed:
             raise TransportError("page session failed; discard this query")
         return self._merger.finish()
+
+    def finish_query(self) -> CompletedQuery:
+        """Export a complete isolated query without further HTTP or budget use."""
+        with self._transport._lock:
+            if self._failed:
+                raise TransportError("page session failed; discard this query")
+            return self._merger.finish_query()

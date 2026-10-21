@@ -1,7 +1,7 @@
 """Offline response validation, without transport or conversion to HTML models.
 
 Pass decoded JSON objects to PageMerger: reserve_next_page(), then accept(response),
-then finish() after the last page. Reservations count planned requests, including
+then finish() or finish_query() after the last page. Reservations count planned requests, including
 failed responses; they are not refunded and do not estimate unknown credit costs.
 Any validation failure poisons the merger; partial results cannot be returned.
 Non-metagraph callers must explicitly choose integer key fields for their query
@@ -107,6 +107,27 @@ def parse_envelope(response: object) -> tuple[list[dict], Pagination]:
     return deepcopy(data), Pagination(current, size, total, pages, expected_next, expected_prev)
 
 
+@dataclass(frozen=True, init=False, repr=False, eq=False, slots=True)
+class CompletedQuery:
+    """Isolated, pagination-validated rows, created by PageMerger.finish_query().
+
+    Not a normalized batch or a security boundary against private-state tampering.
+    Public metadata is immutable; rows returns a fresh deep copy on every access.
+    """
+
+    endpoint: str
+    total_items: int
+    total_pages: int
+    _rows: list[dict]
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("use PageMerger.finish_query() to obtain a CompletedQuery")
+
+    @property
+    def rows(self) -> list[dict]:
+        return deepcopy(self._rows)
+
+
 class PageMerger:
     """One query/filter set. No result until complete; no atomicity claim.
 
@@ -135,6 +156,7 @@ class PageMerger:
             raise ResponseError("key_fields must contain nonempty field names")
         if len(set(key_fields)) != len(key_fields):
             raise ResponseError("duplicate key field")
+        self._endpoint = endpoint
         self._keys = key_fields
         self._budget = budget
         self._rows: list[dict] = []
@@ -200,7 +222,7 @@ class PageMerger:
             self._failed = True
             raise
 
-    def finish(self) -> list[dict]:
+    def _require_complete(self) -> None:
         self._guard()
         if self._first is None or self._pending or self._next is not None:
             self._failed = True
@@ -208,4 +230,22 @@ class PageMerger:
         if len(self._rows) != self._first.total_items:
             self._failed = True
             raise ResponseError("merged count differs from total_items")
+
+    def finish(self) -> list[dict]:
+        self._require_complete()
         return deepcopy(self._rows)
+
+    def finish_query(self) -> CompletedQuery:
+        """Export a detached snapshot; no reservation, I/O or pagination replay.
+
+        Repeatable while healthy. Any later invalid accept/reservation still
+        poisons this merger as before, but cannot change an exported snapshot.
+        """
+        self._require_complete()
+        # No public constructor/factory accepts arbitrary rows as validated data.
+        result = object.__new__(CompletedQuery)
+        object.__setattr__(result, "endpoint", self._endpoint)
+        object.__setattr__(result, "total_items", self._first.total_items)
+        object.__setattr__(result, "total_pages", self._first.total_pages)
+        object.__setattr__(result, "_rows", deepcopy(self._rows))
+        return result

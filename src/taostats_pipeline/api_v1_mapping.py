@@ -1,6 +1,6 @@
 """Pure offline extraction and project calculations; no model or UI equivalence.
 
-Inputs are explicit complete page sequences for one endpoint/filter set/netuid.
+Inputs are explicit page sequences or CompletedQuery for one endpoint/filter set/netuid.
 Field names are observed API names; numeric units and timestamp semantics remain
 unconfirmed. See docs/taostats-api-mapping.md for the conservative local contract.
 """
@@ -12,7 +12,7 @@ from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from types import MappingProxyType
 from typing import Mapping
 
-from .api_v1 import Budget, PageMerger, ResponseError
+from .api_v1 import Budget, CompletedQuery, PageMerger, ResponseError
 
 _METAGRAPH = "/v1/subnets/metagraph"
 _FLAGS = frozenset(("active", "validator_permit", "is_immune", "is_owner_hotkey", "in_danger"))
@@ -151,7 +151,9 @@ class IncentiveBounds:
 
 
 def normalize_pages(endpoint, pages, *, netuid, expected_block=None, loaded_at_utc=None):
-    """Validate complete offline envelopes, then extract only observed fields.
+    """Accept envelopes or CompletedQuery, then extract only observed fields.
+
+    CompletedQuery skips pagination replay; all content checks remain in force.
 
     Non-metagraph queries conservatively require one row per netuid. Metagraph
     rows require block_number for subsequent calculations. Other endpoints may
@@ -166,17 +168,26 @@ def normalize_pages(endpoint, pages, *, netuid, expected_block=None, loaded_at_u
         if not isinstance(loaded_at_utc, datetime) or loaded_at_utc.utcoffset() is None:
             raise MappingError("loaded_at_utc must be a timezone-aware datetime")
         loaded_at_utc = loaded_at_utc.astimezone(timezone.utc).isoformat()
-    if type(pages) not in (list, tuple) or not pages:
-        raise MappingError("explicit nonempty list/tuple of page envelopes required")
-    merger = PageMerger(
-        endpoint,
-        Budget(len(pages), len(pages)),
-        key_fields=None if endpoint == _METAGRAPH else ("netuid",),
-    )
-    for page in pages:
-        merger.reserve_next_page()
-        merger.accept(page)
-    rows = merger.finish()
+    if type(pages) is CompletedQuery:
+        if pages.endpoint != endpoint:
+            raise MappingError("completed query endpoint differs from requested endpoint")
+        rows = pages.rows
+    else:
+        if type(pages) not in (list, tuple) or not pages:
+            raise MappingError("CompletedQuery or nonempty list/tuple of page envelopes required")
+        merger = PageMerger(
+            endpoint,
+            Budget(len(pages), len(pages)),
+            key_fields=None if endpoint == _METAGRAPH else ("netuid",),
+        )
+        for page in pages:
+            merger.reserve_next_page()
+            merger.accept(page)
+        rows = merger.finish()
+    # A completed non-metagraph query may have used other integer key_fields.
+    # Preserve this mapper's narrower one-row-per-subnet content contract.
+    if endpoint != _METAGRAPH and len(rows) > 1:
+        raise MappingError("multiple records for one subnet are not supported")
     records = []
     blocks = set()
     for row in rows:

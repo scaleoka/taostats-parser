@@ -1,18 +1,12 @@
-"""Offline integration through real urllib handlers, decoding and page validation.
+"""Public CompletedQuery integration with synthetic HTTP, clocks and credentials.
 
-PageSession.finish() returns merged decoded rows, not page envelopes or a
-NormalizedBatch. A test-only observer of PUBLIC PageMerger.accept records its
-actual decoded inputs. Only after finish succeeds are these envelopes supplied
-to the mapper. This is instrumentation, not a production adapter or pagination
-implementation. No private state is read or modified. Transport.get is tested
-separately as the public endpoint that already returns envelopes.
+Only I/O boundaries are faked. No observer, pagination implementation or private
+state is needed to pass PageSession results directly to the offline mapper.
 """
 
 import io
 import json
 import os
-from contextlib import contextmanager
-from copy import deepcopy
 from decimal import Decimal, localcontext
 from email.message import Message
 from types import SimpleNamespace
@@ -22,8 +16,8 @@ from urllib.response import addinfourl
 import pytest
 
 from taostats_pipeline import api_v1_transport as http
-from taostats_pipeline.api_v1 import Budget, BudgetError, PageMerger, ResponseError
-from taostats_pipeline.api_v1_mapping import normalize_pages, vtrust_avg
+from taostats_pipeline.api_v1 import Budget, BudgetError, CompletedQuery, ResponseError
+from taostats_pipeline.api_v1_mapping import incentive_bounds, normalize_pages, vtrust_avg
 
 ENDPOINT = "/v1/subnets/metagraph"
 LITERAL = "0.12345678901234567890123456789"
@@ -108,46 +102,32 @@ def rig(monkeypatch):
     )
 
 
-@contextmanager
-def observe_envelopes(monkeypatch):
-    """Observe public accept() inputs without replacing any validation logic."""
-    envelopes = []
-    original_accept = PageMerger.accept
-
-    def accept(merger, response):
-        original_accept(merger, response)
-        envelopes.append(deepcopy(response))
-
-    with monkeypatch.context() as observation:
-        observation.setattr(PageMerger, "accept", accept)
-        yield envelopes
-    # Observer is removed before mapper creates its own offline PageMerger.
-
-
-def test_page_session_to_mapping_preserves_decimal_and_exact_request_accounting(rig, monkeypatch):
+def test_page_session_to_mapping_preserves_decimal_and_exact_request_accounting(rig):
     rig.responses.extend([(wire_page(1), 200), (wire_page(2), 200)])
     budget, allowance = Budget(2, 2), http.LiveAllowance(2)
     transport = http.Transport(budget, allowance, allow_live=True)
     session = transport.pages(ENDPOINT, http.Query(netuid=7, limit=2))
-    with observe_envelopes(monkeypatch) as envelopes:
-        session.fetch_next_page(allow_live=True)
-        assert (budget.requests, budget.pages, allowance.requests) == (1, 1, 1)
-        session.fetch_next_page(allow_live=True)
-        rows = session.finish()  # Required success gate before downstream mapping.
-    assert len(envelopes) == 2
-    assert rows == [row for envelope in envelopes for row in envelope["data"]]
+    session.fetch_next_page(allow_live=True)
+    assert (budget.requests, budget.pages, allowance.requests) == (1, 1, 1)
+    session.fetch_next_page(allow_live=True)
+    query = session.finish_query()
+    assert isinstance(query, CompletedQuery)
+    assert (query.endpoint, query.total_items, query.total_pages) == (ENDPOINT, 4, 2)
+    rows = query.rows
+    assert rows == session.finish() == session.finish_query().rows
     assert [row["uid"] for row in rows] == [0, 1, 2, 3]
     assert {row["netuid"] for row in rows} == {7}
     assert {row["block_number"] for row in rows} == {1000}
-    assert type(envelopes[0]["data"][1]["validator_trust"]) is Decimal
-    assert str(envelopes[0]["data"][1]["validator_trust"]) == LITERAL
     assert type(rows[0]["validator_trust"]) is Decimal
     assert rows[0]["validator_trust"] == Decimal(0)
     assert rows[1]["validator_trust"].as_tuple() == EXACT.as_tuple()
+    rows[1]["validator_trust"] = Decimal(999)  # Export mutation cannot alter the query.
     with localcontext() as context:
         context.prec = 4
-        batch = normalize_pages(ENDPOINT, envelopes, netuid=7, expected_block=1000)
-        mean = vtrust_avg(envelopes, netuid=7, expected_block=1000)
+        batch = normalize_pages(ENDPOINT, query, netuid=7, expected_block=1000)
+        mean = vtrust_avg(query, netuid=7, expected_block=1000)
+    bounds = incentive_bounds(query, netuid=7, filters={"active": True})
+    assert (bounds.minimum, bounds.maximum, bounds.count) == (EXACT, EXACT, 3)
     assert [record.uid for record in batch.records] == [0, 1, 2, 3]
     assert batch.block_number == 1000
     assert {record.netuid for record in batch.records} == {7}
@@ -164,7 +144,7 @@ def test_page_session_to_mapping_preserves_decimal_and_exact_request_accounting(
     assert rig.waits == [15.0]
     assert rig.key_reads == [100.0, 115.0]
     assert all(stream.closed for stream in rig.streams)
-    # This interface mismatch is real: merged rows cannot be passed as envelopes.
+    # Arbitrary plain rows still cannot bypass pagination validation.
     with pytest.raises(ResponseError):
         normalize_pages(ENDPOINT, rows, netuid=7)
 
@@ -185,18 +165,17 @@ def test_transport_get_already_supplies_envelopes_through_public_api(rig):
     assert rig.waits == [15.0]
 
 
-def test_incomplete_session_and_observed_envelopes_cannot_return_partial_results(rig, monkeypatch):
+def test_incomplete_session_cannot_export_a_completed_query(rig):
     rig.responses.append((wire_page(1), 200))
     budget, allowance = Budget(2, 2), http.LiveAllowance(2)
     session = http.Transport(budget, allowance, allow_live=True).pages(ENDPOINT)
-    with observe_envelopes(monkeypatch) as envelopes:
-        session.fetch_next_page(allow_live=True)
-        with pytest.raises(ResponseError, match="incomplete"):
-            session.finish()
+    session.fetch_next_page(allow_live=True)
     with pytest.raises(ResponseError, match="incomplete"):
-        normalize_pages(ENDPOINT, envelopes, netuid=7)
-    with pytest.raises(ResponseError, match="incomplete"):
-        vtrust_avg(envelopes, netuid=7)
+        session.finish_query()
+    with pytest.raises(ResponseError, match="failed"):
+        session.finish()
+    with pytest.raises(ResponseError, match="failed"):
+        session.finish_query()
     with pytest.raises(ResponseError, match="failed"):
         session.fetch_next_page(allow_live=True)
     assert len(rig.calls) == 1
@@ -206,7 +185,7 @@ def test_incomplete_session_and_observed_envelopes_cannot_return_partial_results
 @pytest.mark.parametrize(
     "failure", ["duplicate_uid", "different_block", "invalid_json", "http_429"]
 )
-def test_second_page_failure_poisoning_and_no_partial_mapping(rig, monkeypatch, failure):
+def test_second_page_failure_poisoning_and_no_partial_mapping(rig, failure):
     second = {
         "duplicate_uid": (wire_page(2, duplicate=True), 200),
         "different_block": (wire_page(2, block=1001), 200),
@@ -219,25 +198,21 @@ def test_second_page_failure_poisoning_and_no_partial_mapping(rig, monkeypatch, 
     error = (
         ResponseError if failure in ("duplicate_uid", "different_block") else http.TransportError
     )
-    with observe_envelopes(monkeypatch) as envelopes:
+    session.fetch_next_page(allow_live=True)
+    messages = {
+        "duplicate_uid": "duplicate",
+        "different_block": "block_number",
+        "invalid_json": "invalid JSON",
+        "http_429": "HTTP request rejected",
+    }
+    with pytest.raises(error, match=messages[failure]):
         session.fetch_next_page(allow_live=True)
-        messages = {
-            "duplicate_uid": "duplicate",
-            "different_block": "block_number",
-            "invalid_json": "invalid JSON",
-            "http_429": "HTTP request rejected",
-        }
-        with pytest.raises(error, match=messages[failure]):
-            session.fetch_next_page(allow_live=True)
     with pytest.raises(http.TransportError, match="failed"):
         session.finish()
     with pytest.raises(http.TransportError, match="failed"):
+        session.finish_query()
+    with pytest.raises(http.TransportError, match="failed"):
         session.fetch_next_page(allow_live=True)
-    assert len(envelopes) == 1  # Observer records only pages accepted by the real merger.
-    with pytest.raises(ResponseError, match="incomplete"):
-        normalize_pages(ENDPOINT, envelopes, netuid=7)
-    with pytest.raises(ResponseError, match="incomplete"):
-        vtrust_avg(envelopes, netuid=7)
     assert (budget.requests, budget.pages, allowance.requests) == (2, 2, 2)
     assert len(rig.calls) == 2  # No retry and no continuation after failure.
     assert len(rig.key_reads) == 2
@@ -256,6 +231,8 @@ def test_budget_or_allowance_denial_precedes_http_and_poison_session(rig, limits
         session.fetch_next_page(allow_live=True)
     with pytest.raises(http.TransportError, match="failed"):
         session.finish()
+    with pytest.raises(http.TransportError, match="failed"):
+        session.finish_query()
     with pytest.raises(http.TransportError, match="failed"):
         session.fetch_next_page(allow_live=True)
     assert (budget.requests, budget.pages) == (1, 1)
@@ -279,20 +256,46 @@ def test_disabled_live_never_reads_key_or_enters_urllib(rig):
     assert rig.calls == rig.key_reads == rig.waits == []
 
 
-def test_mapper_rejects_other_netuid_even_after_successful_session(rig, monkeypatch):
+def test_mapper_rejects_other_netuid_even_after_successful_session(rig):
     rig.responses.extend([(wire_page(1), 200), (wire_page(2, netuid=8), 200)])
     budget, allowance = Budget(2, 2), http.LiveAllowance(2)
     session = http.Transport(budget, allowance, allow_live=True).pages(
         ENDPOINT, http.Query(netuid=7, limit=2)
     )
-    with observe_envelopes(monkeypatch) as envelopes:
-        session.fetch_next_page(allow_live=True)
-        session.fetch_next_page(allow_live=True)
-        rows = session.finish()
-    assert {row["netuid"] for row in rows} == {7, 8}
+    session.fetch_next_page(allow_live=True)
+    session.fetch_next_page(allow_live=True)
+    query = session.finish_query()
+    assert {row["netuid"] for row in query.rows} == {7, 8}
     with pytest.raises(ResponseError, match="netuid differs"):
-        normalize_pages(ENDPOINT, envelopes, netuid=7)
+        normalize_pages(ENDPOINT, query, netuid=7)
     with pytest.raises(ResponseError, match="netuid differs"):
-        vtrust_avg(envelopes, netuid=7)
+        vtrust_avg(query, netuid=7)
     assert (budget.requests, budget.pages, allowance.requests) == (2, 2, 2)
     assert len(rig.calls) == 2
+
+
+def test_empty_http_query_can_be_normalized_without_more_io(rig):
+    body = json.dumps(
+        {
+            "data": [],
+            "pagination": {
+                "current_page": 1,
+                "per_page": 1,
+                "total_items": 0,
+                "total_pages": 0,
+                "next_page": None,
+                "prev_page": None,
+            },
+        }
+    ).encode()
+    rig.responses.append((body, 200))
+    budget, allowance = Budget(1, 1), http.LiveAllowance(1)
+    session = http.Transport(budget, allowance, allow_live=True).pages(ENDPOINT)
+    session.fetch_next_page(allow_live=True)
+    query = session.finish_query()
+    assert query.rows == session.finish() == []
+    assert normalize_pages(ENDPOINT, query, netuid=7).records == ()
+    assert vtrust_avg(query, netuid=7) is None
+    assert (budget.requests, budget.pages, allowance.requests) == (1, 1, 1)
+    assert len(rig.calls) == len(rig.key_reads) == 1
+    assert rig.waits == []
