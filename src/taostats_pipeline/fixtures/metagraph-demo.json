@@ -1,0 +1,82 @@
+{
+  "metadata": {
+    "synthetic": true,
+    "description": "Fabricated educational example; not real Bittensor data or identifiers.",
+    "netuid": 7,
+    "expected_block": 1000
+  },
+  "envelopes": [
+    {
+      "data": [
+        {
+          "netuid": 7,
+          "uid": 0,
+          "block_number": 1000,
+          "active": true,
+          "validator_permit": true,
+          "validator_trust": "0"
+        },
+        {
+          "netuid": 7,
+          "uid": 1,
+          "block_number": 1000,
+          "active": true,
+          "validator_permit": true,
+          "validator_trust": "0.2"
+        },
+        {
+          "netuid": 7,
+          "uid": 2,
+          "block_number": 1000,
+          "active": true,
+          "validator_permit": true,
+          "validator_trust": "0.4"
+        }
+      ],
+      "pagination": {
+        "current_page": 1,
+        "per_page": 3,
+        "total_items": 6,
+        "total_pages": 2,
+        "next_page": 2,
+        "prev_page": null
+      }
+    },
+    {
+      "data": [
+        {
+          "netuid": 7,
+          "uid": 3,
+          "block_number": 1000,
+          "active": true,
+          "validator_permit": true,
+          "validator_trust": "0.80000000000000000000000000004"
+        },
+        {
+          "netuid": 7,
+          "uid": 4,
+          "block_number": 1000,
+          "active": false,
+          "validator_permit": true,
+          "validator_trust": "0.99"
+        },
+        {
+          "netuid": 7,
+          "uid": 5,
+          "block_number": 1000,
+          "active": true,
+          "validator_permit": false,
+          "validator_trust": "0.6"
+        }
+      ],
+      "pagination": {
+        "current_page": 2,
+        "per_page": 3,
+        "total_items": 6,
+        "total_pages": 2,
+        "next_page": null,
+        "prev_page": 1
+      }
+    }
+  ]
+}
