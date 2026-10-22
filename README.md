@@ -1,12 +1,107 @@
-# Taostats Parser
+# Taostats Parser — Python Automation / Data Infrastructure
 
-Модульный Python pipeline для локальных HTML: subnet snapshot, metadata и
-агрегированные validator metrics. Реализованы нормализация, валидация, CLI,
-CSV/JSON, опциональный Google Sheets exporter и воспроизводимая демонстрация
-на синтетических данных.
-Портфолио-проект Python Automation / Data Infrastructure Engineering.
+Портфолио-проект с двумя отдельными направлениями: контролируемая обработка
+Taostats API v1 Metagraph и модульный pipeline для локальных HTML. В центре
+проекта — проверка полноты данных, явные ограничения операций, точные Decimal
+и воспроизводимые offline-демонстрации на синтетических данных.
 
-## Установка и запуск
+| Направление | Реализовано |
+| --- | --- |
+| Taostats API v1 Metagraph | Контролируемое получение, проверка пагинации, `CompletedQuery`, нормализация, вычисление VTrust и incentive по явным фильтрам |
+| Local HTML Pipeline | Локальные HTML: subnet snapshot, metadata, validator metrics; валидация, версионированный экспорт CSV/JSON, опциональный Google Sheets exporter |
+
+API v1 и HTML pipeline имеют отдельные модели и пути обработки. API-результаты
+не передаются автоматически в существующие HTML export или Google Sheets.
+
+## Quick Start: offline API v1 demo (Windows PowerShell)
+
+Нужен Python 3.10+ с launcher `py`. Из корня репозитория:
+
+```powershell
+py -m pip install -e .
+py -m taostats_pipeline.api_v1_demo
+```
+
+Установка может потребовать сети для загрузки зависимостей. Сам demo полностью
+offline: использует встроенную синтетическую fixture, не читает API-ключи,
+не создаёт HTTP transport и не обращается к Google Sheets. Результат — JSON
+в stdout, без файлов экспорта. Демонстрационный entry point поддерживает только
+offline-режим; live-параметров у него нет.
+
+Фактический формат результата demo из завершённого PR #12:
+
+```json
+{
+  "status": "ok",
+  "mode": "offline",
+  "synthetic": true,
+  "message": "Synthetic demo only; not real Bittensor data.",
+  "netuid": 7,
+  "block": 1000,
+  "record_count": 6,
+  "vtrust_avg": "0.35000000000000000000000000001",
+  "vtrust_computed": true
+}
+```
+
+**Все значения в примере вымышленные и относятся к учебной fixture, а не
+к реальным данным Bittensor или Taostats.** `status: ok` означает успешную
+проверку fixture. `netuid`, UID и блок выбраны для примера; `block` — номер
+вымышленного блока, не timestamp. Из шести записей четыре проходят фильтр
+`active=true AND validator_permit=true`; их VTrust усредняется с учётом нуля.
+Этот demo вычисляет только VTrust; incentive доступен отдельно через
+`analyze_metagraph(..., incentive_filters=...)` с явными boolean-фильтрами.
+
+## Engineering Highlights
+
+- Проверка полноты и порядка пагинации, totals и дубликатов UID.
+- `Budget`, отдельный `LiveAllowance` и локальный `LocalRateLimiter` ограничивают
+  попытки и частоту HTTP-вызовов; они не являются бюджетом API-кредитов.
+- Явный live opt-in при создании транспорта и выполнении запросов;
+  автоматических retries нет.
+- `CompletedQuery` передаёт завершённую выборку без повторной пагинации;
+  fail-closed обработка исключает выдачу частичного анализа при ошибке.
+- Decimal без промежуточного float, проверка `netuid` и согласованности блоков.
+  API VTrust использует независимый Decimal Context с precision не менее 50
+  и `ROUND_HALF_EVEN`, без HTML-округления до 6 знаков.
+- Воспроизводимые синтетические offline-тесты с блокировкой реальной сети.
+- Атомарная локальная публикация версионированных CSV/JSON в отдельном HTML pipeline.
+
+## Архитектура API v1 Metagraph
+
+```text
+Синтетические envelopes                 Явный live opt-in (по умолчанию выключен)
+  complete_metagraph + Budget             fetch_metagraph → Transport / PageSession
+                 \                       /  Budget + LiveAllowance + LocalRateLimiter
+                  PageMerger: пагинация / totals / UID
+                                  ↓
+                            CompletedQuery
+                                  ↓
+                        analyze_metagraph
+                                  ↓
+             normalize_pages → VTrust / incentive по явным фильтрам
+                                  ↓
+                         MetagraphAnalysis
+```
+
+Offline demo использует левую ветку и печатает JSON-отчёт по VTrust.
+Схема не включает HTML exporter или Sheets: интеграции с ними нет.
+`CompletedQuery` подтверждает локальную проверку завершённости пагинации,
+но не атомарность серверного снимка или соответствие метрик интерфейсу Taostats.
+
+## Навигация по документации
+
+| Документ | Содержание |
+| --- | --- |
+| [Metagraph demo](docs/taostats-metagraph-demo.md) | Запуск, вымышленная fixture, JSON, расчёт VTrust и ошибки |
+| [API orchestration](docs/taostats-api-orchestration.md) | Ограниченная операция metagraph, offline/live пути и анализ |
+| [API mapping](docs/taostats-api-mapping.md) | Нормализация, `CompletedQuery`, Decimal, фильтры и семантика метрик |
+| [API transport](docs/taostats-api-transport.md) | Live opt-in, HTTP guards, бюджеты и локальные ограничения |
+| [API research](docs/taostats-api-research.md) | Исторические наблюдения PR #5A, гипотезы и открытые вопросы; не текущий статус реализации |
+| [HTML architecture](docs/architecture.md) | Локальный HTML pipeline, валидация и гарантии экспорта |
+| [Google Sheets setup](docs/google-sheets-setup.md) | Настройка и явная публикация результатов HTML pipeline |
+
+## Local HTML Pipeline: установка и запуск
 
 Python 3.10+; CI использует 3.12. Из корня репозитория:
 
@@ -37,7 +132,9 @@ python -m ruff format --check .
 `generation`. Exit code: 0 — успех, 1 — ошибка обработки/экспорта,
 2 — некорректные аргументы CLI.
 
-## Вход и воспроизводимость
+Следующие разделы о входе, схемах, валидации и экспорте относятся к HTML pipeline.
+
+## HTML: вход и воспроизводимость
 
 В каталоге входа нужен `manifest.json`:
 
@@ -103,7 +200,8 @@ CSV — UTF-8 с заголовком и теми же полями. Поряд�
 Число без `%` сохраняется как есть, включая `root_proportion`; единицы не угадываются.
 Конвертации валют нет. `1.2M`, десятичная запятая, смешанные валюты, NaN, Infinity
 и неоднозначный текст отвергаются. Маркеры пустоты: пустая строка, `—`, `N/A`.
-VTrust усредняется и округляется до 6 знаков (Decimal half-even); min/max incentive
+В HTML pipeline VTrust усредняется и округляется до 6 знаков (Decimal half-even);
+это отдельный расчёт, не API metagraph VTrust. Min/max incentive
 сохраняют точность входа. Emission/price берутся из snapshot, дубли из metadata
 не экспортируются. Порядковая колонка и график за 7 дней не входят в модели.
 
@@ -152,15 +250,24 @@ JSON boolean. Python API: `run(..., strict=True)`, `validate(..., strict=True)`
 
 ```text
 src/taostats_pipeline/
-  models.py          # типизированные записи
-  parsers/           # чистый разбор и явная нормализация
-  validation.py      # отчёт и целостность
-  pipeline.py        # load → parse → normalize → validate → export
-  exporters/         # CSV/JSON и публикация поколения
-  cli.py             # demo / run / validate
-  fixtures/          # синтетические HTML и manifest
- tests/              # новые тесты и сохранённые characterization-тесты PR #1
- docs/architecture.md
+  api_v1.py                # Budget, envelopes, PageMerger, CompletedQuery
+  api_v1_transport.py      # opt-in Transport, PageSession, allowance, limiter
+  api_v1_mapping.py        # APIRecord, нормализация, VTrust и incentive
+  api_v1_orchestration.py  # complete/fetch/analyze_metagraph, MetagraphAnalysis
+  api_v1_demo.py           # отдельный synthetic offline module entry point
+  models.py                # типизированные записи HTML pipeline
+  parsers/                 # чистый разбор HTML и явная нормализация
+  validation.py            # отчёт и целостность HTML-наборов
+  pipeline.py              # локальный load → parse → normalize → validate → export
+  exporters/
+    __init__.py            # CSV/JSON и публикация поколения
+    google_sheets.py       # явная публикация HTML-наборов
+  cli.py                   # HTML: demo / run / validate / publish-sheets
+  __main__.py              # module entry point HTML CLI
+  fixtures/                # HTML, manifest и synthetic metagraph-demo.json
+tests/                     # HTML/Sheets/API offline и characterization-тесты PR #1
+docs/                      # API demo/research/transport/mapping/orchestration,
+                           # HTML architecture и Google Sheets setup
 ```
 
 Pytest блокирует TCP, UDP, DNS и дочерние процессы, включая end-to-end вызов demo.
@@ -169,7 +276,7 @@ Pytest блокирует TCP, UDP, DNS и дочерние процессы, в
 Ruff проверяет пакет, тесты и конфигурацию. CI работает на pull requests,
 без расписания и секретов.
 
-## Google Sheets: только явная публикация
+## HTML → Google Sheets: только явная публикация
 
 На Windows рекомендуется безопасная обёртка (Windows PowerShell 5.1 / PowerShell 7):
 
@@ -220,10 +327,24 @@ staging-листы. Три набора и строка `run_status` публи�
 
 ## Ограничения и следующие этапы
 
-Только локальные фикстуры; актуальность селекторов живого сайта не проверяется.
-Не реализованы сбор страниц, автоматическое определение полноты пагинации,
-production deployment, локальный постоянный журнал запусков и очистка поколений.
-CLI-отчёт описывает текущий запуск. При изменении HTML нужны изменения парсеров и тестов.
+- **API v1:** metagraph orchestration ограничен одной подсетью, максимум двумя
+  страницами и 400 фактическими записями. Live-план задаёт точное число страниц,
+  без автоматического расширения. Live transport существует, но по умолчанию
+  выключен; демонстрационный entry point работает только offline.
+- Нет подтверждённого соответствия рассчитанных VTrust/incentive интерфейсу
+  Taostats. Orange/green группы HTML не заполняются из API автоматически.
+  Синтетические тесты не доказывают live-схему или атомарность данных сервера.
+- Стоимость запросов в API-кредитах неизвестна: число HTTP-попыток не гарантирует
+  число списанных кредитов или сохранность баланса. Limiter действует только
+  в рамках одного экземпляра и не координирует другие процессы или клиентов.
+- **HTML pipeline/demo:** используются локальные HTML, демонстрация — только
+  на синтетических fixtures; актуальность селекторов живого сайта не проверяется.
+  Не реализованы сбор HTML-страниц и автоматическое определение полноты их
+  пагинации; manifest проверяет явно заданное количество файлов.
+- Нет production deployment и автоматического массового сбора данных.
+  Для HTML pipeline также нет локального постоянного журнала запусков и очистки
+  поколений. CLI-отчёт описывает текущий запуск. При изменении HTML нужны изменения
+  парсеров и тестов.
 
 `src/main.py`, `src/subnets_full_parser.py`, `src/subnets_vtrust_incentive.py`
 сохранены как legacy: **не запускайте их**. Они содержат внешние операции и могут
